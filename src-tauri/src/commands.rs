@@ -7,9 +7,18 @@ use crate::shortcuts::{ShortcutConfig, ShortcutState};
 use crate::snippets::{self, Snippet};
 use crate::trust::{self, TrustStatus};
 use crate::workspace::{WorkspaceInfo, WorkspaceManager, WorkspaceState};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, State};
+
+/// Payload emitted when a repo requires trust verification before running setup
+#[derive(Debug, Clone, Serialize)]
+struct TrustRequiredPayload {
+    workspace_id: String,
+    repo_path: String,
+    script_content: String,
+    changed_files: Vec<String>,
+}
 
 // ── Config Commands ──
 
@@ -79,6 +88,7 @@ pub struct CreateWorkspaceArgs {
 
 #[tauri::command]
 pub fn create_workspace(
+    app: AppHandle,
     config: State<'_, Mutex<ConfigStore>>,
     ws_mgr: State<'_, Mutex<WorkspaceManager>>,
     pty_mgr: State<'_, Mutex<PtyManager>>,
@@ -124,18 +134,35 @@ pub fn create_workspace(
         &agent_name,
         &worktree_dir,
     )?;
+    drop(ws_manager);
 
-    // Run setup script if configured
-    if let Some(script) = setup_script {
-        let output = std::process::Command::new("sh")
-            .args(["-c", &script])
-            .current_dir(&ws.worktree_path)
-            .output();
-
-        if let Ok(out) = output {
-            if !out.status.success() {
-                let stderr = String::from_utf8_lossy(&out.stderr);
-                eprintln!("setup script warning: {stderr}");
+    // Trust check for setup scripts
+    if let Some(ref script) = setup_script {
+        let trust_status = trust::check_trust(&args.repo_path).unwrap_or(TrustStatus::Untrusted);
+        match trust_status {
+            TrustStatus::Trusted => {
+                // Trusted — run setup script
+                run_setup_script(script, &ws.worktree_path);
+            }
+            TrustStatus::Untrusted => {
+                // Not trusted — emit event and return without spawning agent
+                let _ = app.emit("trust-required", TrustRequiredPayload {
+                    workspace_id: ws.id.clone(),
+                    repo_path: args.repo_path.clone(),
+                    script_content: script.clone(),
+                    changed_files: vec![],
+                });
+                return Ok(ws);
+            }
+            TrustStatus::Changed { changed_files } => {
+                // Trust stale — emit event and return without spawning agent
+                let _ = app.emit("trust-required", TrustRequiredPayload {
+                    workspace_id: ws.id.clone(),
+                    repo_path: args.repo_path.clone(),
+                    script_content: script.clone(),
+                    changed_files,
+                });
+                return Ok(ws);
             }
         }
     }
@@ -158,6 +185,124 @@ pub fn create_workspace(
     )?;
 
     Ok(ws)
+}
+
+/// Helper: run a setup script in a worktree directory
+fn run_setup_script(script: &str, worktree_path: &str) {
+    let output = std::process::Command::new("sh")
+        .args(["-c", script])
+        .current_dir(worktree_path)
+        .output();
+
+    if let Ok(out) = output {
+        if !out.status.success() {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            eprintln!("setup script warning: {stderr}");
+        }
+    }
+}
+
+/// Run setup script then start agent (called after user approves trust)
+#[tauri::command]
+pub fn run_setup_and_start_agent(
+    config: State<'_, Mutex<ConfigStore>>,
+    ws_mgr: State<'_, Mutex<WorkspaceManager>>,
+    pty_mgr: State<'_, Mutex<PtyManager>>,
+    keychain: State<'_, KeychainState>,
+    workspace_id: String,
+) -> Result<(), String> {
+    let ws = ws_mgr.lock().map_err(|e| e.to_string())?;
+    let workspace = ws
+        .get(&workspace_id)
+        .ok_or_else(|| format!("workspace not found: {workspace_id}"))?;
+
+    let agent_name = workspace.agent.clone();
+    let repo_path = workspace.repo_path.clone();
+    let worktree_path = workspace.worktree_path.clone();
+    drop(ws);
+
+    // Get setup script and agent config
+    let store = config.lock().map_err(|e| e.to_string())?;
+    let setup_script = store
+        .repo_configs
+        .get(&repo_path)
+        .and_then(|rc| rc.setup_script.clone());
+    let agent_config = store
+        .resolve_agent(&repo_path, &agent_name)
+        .ok_or_else(|| format!("unknown agent: {agent_name}"))?;
+    let default_model = agent_config.default_model.clone();
+    drop(store);
+
+    // Run setup script
+    if let Some(script) = setup_script {
+        run_setup_script(&script, &worktree_path);
+    }
+
+    // Get cached secrets
+    let secret_env = {
+        let kc = keychain.lock().map_err(|e| e.to_string())?;
+        kc.env_vars().clone()
+    };
+
+    // Spawn agent PTY
+    let adapter = AgentAdapter::new(agent_name, agent_config);
+    let mut pty = pty_mgr.lock().map_err(|e| e.to_string())?;
+    pty.spawn(
+        &workspace_id,
+        &adapter,
+        &worktree_path,
+        default_model.as_deref(),
+        Some(&secret_env),
+    )?;
+
+    Ok(())
+}
+
+/// Start agent without running setup script (called when user denies trust)
+#[tauri::command]
+pub fn start_agent_no_setup(
+    config: State<'_, Mutex<ConfigStore>>,
+    ws_mgr: State<'_, Mutex<WorkspaceManager>>,
+    pty_mgr: State<'_, Mutex<PtyManager>>,
+    keychain: State<'_, KeychainState>,
+    workspace_id: String,
+) -> Result<(), String> {
+    let ws = ws_mgr.lock().map_err(|e| e.to_string())?;
+    let workspace = ws
+        .get(&workspace_id)
+        .ok_or_else(|| format!("workspace not found: {workspace_id}"))?;
+
+    let agent_name = workspace.agent.clone();
+    let repo_path = workspace.repo_path.clone();
+    let worktree_path = workspace.worktree_path.clone();
+    drop(ws);
+
+    // Resolve agent config
+    let store = config.lock().map_err(|e| e.to_string())?;
+    let agent_config = store
+        .resolve_agent(&repo_path, &agent_name)
+        .ok_or_else(|| format!("unknown agent: {agent_name}"))?;
+    let default_model = agent_config.default_model.clone();
+    drop(store);
+
+    // Get cached secrets
+    let secret_env = {
+        let kc = keychain.lock().map_err(|e| e.to_string())?;
+        kc.env_vars().clone()
+    };
+
+    // Spawn agent PTY (no setup)
+    let adapter = AgentAdapter::new(agent_name, agent_config);
+    let mut pty = pty_mgr.lock().map_err(|e| e.to_string())?;
+    pty.spawn(
+        &workspace_id,
+        &adapter,
+        &worktree_path,
+        default_model.as_deref(),
+        Some(&secret_env),
+    )?;
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -234,12 +379,13 @@ pub fn run_snippet(
         .get(&workspace_id)
         .ok_or_else(|| format!("workspace not found: {workspace_id}"))?;
 
+    let repo_path = workspace.repo_path.clone();
     let store = config.lock().map_err(|e| e.to_string())?;
 
     // Look up snippet: repo-level first, then global
     let script = store
         .repo_configs
-        .get(&workspace.repo_path)
+        .get(&repo_path)
         .and_then(|rc| rc.snippets.get(&snippet_name))
         .cloned()
         .ok_or_else(|| format!("snippet not found: {snippet_name}"))?;
@@ -247,6 +393,17 @@ pub fn run_snippet(
     let worktree_path = workspace.worktree_path.clone();
     drop(ws);
     drop(store);
+
+    // Trust check for repo-level snippets
+    match trust::check_trust(&repo_path)? {
+        TrustStatus::Trusted => {}
+        TrustStatus::Untrusted => {
+            return Err("repo not trusted — grant trust before running snippets".to_string());
+        }
+        TrustStatus::Changed { .. } => {
+            return Err("repo trust stale — re-approve trust before running snippets".to_string());
+        }
+    }
 
     let output = std::process::Command::new("sh")
         .args(["-c", &script])
@@ -445,8 +602,9 @@ pub async fn run_snippet_v2(
     let snippet = snippets::resolve_snippet(&repo_path, &name)
         .ok_or_else(|| format!("snippet not found: {name}"))?;
 
-    // Trust check for repo-level snippets
-    if snippets::is_repo_snippet(&repo_path, &name) {
+    // Trust check for repo-level snippets (with TOCTOU protection)
+    let is_repo = snippets::is_repo_snippet(&repo_path, &name);
+    if is_repo {
         match trust::check_trust(&repo_path)? {
             TrustStatus::Trusted => {}
             TrustStatus::Untrusted => {
@@ -458,8 +616,10 @@ pub async fn run_snippet_v2(
         }
     }
 
+    // Capture the command and re-resolve right before execution to prevent TOCTOU
     let command = snippet.command.clone();
     let ws_id = workspace_id.clone();
+    let repo_path_clone = repo_path.clone();
 
     // Emit separator header
     let _ = app.emit(
@@ -470,6 +630,20 @@ pub async fn run_snippet_v2(
     // Spawn child process in background thread
     let app_clone = app.clone();
     std::thread::spawn(move || {
+        // TOCTOU guard: re-verify the snippet command hasn't changed since trust check
+        if is_repo {
+            if let Some(current) = snippets::resolve_snippet(&repo_path_clone, &name) {
+                if current.command != command {
+                    let _ = app_clone.emit(
+                        &format!("snippet-output-{ws_id}"),
+                        "Error: snippet changed after trust check. Aborting.\n".to_string(),
+                    );
+                    let _ = app_clone.emit(&format!("snippet-complete-{ws_id}"), -1);
+                    return;
+                }
+            }
+        }
+
         let child = std::process::Command::new("sh")
             .args(["-c", &command])
             .current_dir(&worktree_path)
@@ -626,11 +800,14 @@ pub fn list_shortcuts(
 
 #[tauri::command]
 pub fn save_shortcuts(
+    app: AppHandle,
     shortcuts: State<'_, ShortcutState>,
     config: ShortcutConfig,
 ) -> Result<(), String> {
     let mut store = shortcuts.lock().map_err(|e| e.to_string())?;
-    store.save(config)
+    store.save(config.clone())?;
+    let _ = app.emit("shortcuts-updated", config);
+    Ok(())
 }
 
 // ── Model Switch Command ──

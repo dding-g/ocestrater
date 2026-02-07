@@ -6,7 +6,6 @@ use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter};
 
 const BATCH_INTERVAL_MS: u64 = 16; // ~60fps batching
-const MAX_SCROLLBACK: usize = 50_000; // lines
 
 /// Represents a single PTY session for an agent
 pub struct PtySession {
@@ -31,6 +30,20 @@ impl PtyManager {
         }
     }
 
+    /// Remove dead sessions (naturally exited processes) to free up slots
+    fn prune_dead_sessions(&mut self) {
+        let dead_ids: Vec<String> = self
+            .sessions
+            .iter()
+            .filter(|(_, s)| s.alive.lock().map(|a| !*a).unwrap_or(true))
+            .map(|(id, _)| id.clone())
+            .collect();
+
+        for id in dead_ids {
+            self.sessions.remove(&id);
+        }
+    }
+
     /// Spawn a new PTY session for a workspace
     pub fn spawn(
         &mut self,
@@ -40,6 +53,9 @@ impl PtyManager {
         model: Option<&str>,
         secret_env: Option<&std::collections::HashMap<String, String>>,
     ) -> Result<(), String> {
+        // Clean up naturally-exited sessions before checking capacity
+        self.prune_dead_sessions();
+
         if self.sessions.len() >= self.max_sessions {
             return Err(format!(
                 "maximum concurrent agents reached ({}). Stop an existing agent to create a new one.",

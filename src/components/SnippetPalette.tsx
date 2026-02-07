@@ -1,4 +1,4 @@
-import { createSignal, createEffect, For, Show, onCleanup } from "solid-js";
+import { createSignal, createEffect, For, Show } from "solid-js";
 import type { Snippet, SnippetCategory } from "../lib/types";
 import { listSnippets, runSnippetV2 } from "../lib/tauri";
 
@@ -24,6 +24,7 @@ export default function SnippetPalette(props: SnippetPaletteProps) {
   const [snippets, setSnippets] = createSignal<Snippet[]>([]);
   const [selectedIndex, setSelectedIndex] = createSignal(0);
   let inputRef!: HTMLInputElement;
+  let listRef!: HTMLDivElement;
 
   // Load snippets when palette opens
   createEffect(() => {
@@ -59,6 +60,14 @@ export default function SnippetPalette(props: SnippetPaletteProps) {
     setSelectedIndex(0);
   });
 
+  function scrollSelectedIntoView(index: number) {
+    if (!listRef) return;
+    const items = listRef.querySelectorAll(".sp-item");
+    if (items[index]) {
+      items[index].scrollIntoView({ block: "nearest" });
+    }
+  }
+
   function handleKeyDown(e: KeyboardEvent) {
     const items = filtered();
     if (e.key === "Escape") {
@@ -66,10 +75,18 @@ export default function SnippetPalette(props: SnippetPaletteProps) {
       props.onClose();
     } else if (e.key === "ArrowDown") {
       e.preventDefault();
-      setSelectedIndex((i) => Math.min(i + 1, items.length - 1));
+      setSelectedIndex((i) => {
+        const next = Math.min(i + 1, items.length - 1);
+        scrollSelectedIntoView(next);
+        return next;
+      });
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
-      setSelectedIndex((i) => Math.max(i - 1, 0));
+      setSelectedIndex((i) => {
+        const next = Math.max(i - 1, 0);
+        scrollSelectedIntoView(next);
+        return next;
+      });
     } else if (e.key === "Enter") {
       e.preventDefault();
       const item = items[selectedIndex()];
@@ -118,7 +135,7 @@ export default function SnippetPalette(props: SnippetPaletteProps) {
           </For>
         </div>
 
-        <div class="sp-list">
+        <div class="sp-list" ref={listRef}>
           <Show
             when={filtered().length > 0}
             fallback={
@@ -267,19 +284,7 @@ export default function SnippetPalette(props: SnippetPaletteProps) {
           gap: 6px;
           margin-top: 2px;
         }
-        .sp-cat-badge {
-          font-size: 10px;
-          padding: 1px 6px;
-          border-radius: 8px;
-          font-weight: 500;
-          text-transform: uppercase;
-        }
-        .sp-cat-setup  { background: rgba(255, 152, 0, 0.15); color: var(--warning); }
-        .sp-cat-build  { background: rgba(74, 158, 255, 0.15); color: var(--accent); }
-        .sp-cat-test   { background: rgba(76, 175, 80, 0.15);  color: var(--success); }
-        .sp-cat-lint   { background: rgba(156, 39, 176, 0.15); color: #ce93d8; }
-        .sp-cat-deploy { background: rgba(244, 67, 54, 0.15);  color: var(--error); }
-        .sp-cat-custom { background: rgba(255, 255, 255, 0.08); color: var(--text-secondary); }
+        /* Category badge styles (.sp-cat-*) are in global.css */
         .sp-item-key {
           font-size: 10px;
           font-family: var(--font-mono);

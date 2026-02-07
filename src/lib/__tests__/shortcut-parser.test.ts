@@ -227,32 +227,25 @@ describe("buildShortcutMap", () => {
     expect(map.get("Cmd+k")).toBe("action.a");
   });
 
-  it("RESERVED_SHORTCUTS set contains uppercase key values", () => {
-    // Note: The RESERVED_SHORTCUTS set uses uppercase keys ("Cmd+Q")
-    // but normalizeBinding lowercases the key part to "Cmd+q".
-    // This means the reserved check in buildShortcutMap does not match
-    // normalized bindings. The tests below verify the actual behavior.
+  it("RESERVED_SHORTCUTS correctly rejects OS-reserved keybindings", () => {
+    // RESERVED_SHORTCUTS uses lowercase keys ("Cmd+q") which matches
+    // normalizeBinding output. Reserved shortcuts are correctly rejected.
     const { map } = buildShortcutMap({
       "quit.action": "Cmd+Q",
     });
-    // normalizeBinding("Cmd+Q") -> "Cmd+q" which does NOT match "Cmd+Q" in the set,
-    // so the shortcut is NOT skipped (despite the intent).
-    expect(map.has("Cmd+q")).toBe(true);
-    expect(map.get("Cmd+q")).toBe("quit.action");
+    // normalizeBinding("Cmd+Q") -> "Cmd+q" which matches "Cmd+q" in the set,
+    // so the shortcut IS skipped as intended.
+    expect(map.has("Cmd+q")).toBe(false);
   });
 
-  it("reserved shortcuts would be skipped if binding matches exactly", () => {
-    // If a binding somehow normalized to exactly "Cmd+Q" (uppercase),
-    // it would be skipped. But normalizeBinding always lowercases the key,
-    // so this path is unreachable in practice.
-    // This test documents the behavior: reserved shortcuts with uppercase
-    // letters in the set are effectively never triggered.
+  it("reserved shortcuts are skipped for all reserved keys", () => {
+    // Cmd+H and Cmd+M are OS-reserved and should be rejected.
     const { map } = buildShortcutMap({
       "hide.action": "Cmd+H",
       "minimize.action": "Cmd+M",
     });
-    expect(map.has("Cmd+h")).toBe(true);
-    expect(map.has("Cmd+m")).toBe(true);
+    expect(map.has("Cmd+h")).toBe(false);
+    expect(map.has("Cmd+m")).toBe(false);
   });
 
   it("non-reserved shortcuts are always included", () => {

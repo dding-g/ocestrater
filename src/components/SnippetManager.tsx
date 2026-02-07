@@ -544,20 +544,7 @@ export default function SnippetManager(props: SnippetManagerProps) {
           color: var(--text-primary);
         }
 
-        /* Category badges - reuse from palette */
-        .sp-cat-badge {
-          font-size: 10px;
-          padding: 1px 6px;
-          border-radius: 8px;
-          font-weight: 500;
-          text-transform: uppercase;
-        }
-        .sp-cat-setup  { background: rgba(255, 152, 0, 0.15); color: var(--warning); }
-        .sp-cat-build  { background: rgba(74, 158, 255, 0.15); color: var(--accent); }
-        .sp-cat-test   { background: rgba(76, 175, 80, 0.15);  color: var(--success); }
-        .sp-cat-lint   { background: rgba(156, 39, 176, 0.15); color: #ce93d8; }
-        .sp-cat-deploy { background: rgba(244, 67, 54, 0.15);  color: var(--error); }
-        .sp-cat-custom { background: rgba(255, 255, 255, 0.08); color: var(--text-secondary); }
+        /* Category badge styles (.sp-cat-*) are in global.css */
 
         /* Add form */
         .sm-add-form {

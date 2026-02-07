@@ -1,4 +1,4 @@
-import { createEffect, createSignal, For, Show, onMount } from "solid-js";
+import { createEffect, createSignal, For, Show } from "solid-js";
 import type { FileDiff, DiffHunk, DiffLine } from "../../lib/types";
 
 interface DiffViewerProps {
@@ -234,11 +234,15 @@ export default function DiffViewer(props: DiffViewerProps) {
           white-space: pre;
           min-height: 18px;
         }
+        .diff-viewer {
+          --diff-add-bg: #2d4a2d;
+          --diff-del-bg: #4a2d2d;
+        }
         .dv-line-add {
-          background: #2d4a2d;
+          background: var(--diff-add-bg);
         }
         .dv-line-del {
-          background: #4a2d2d;
+          background: var(--diff-del-bg);
         }
         .dv-lineno {
           display: inline-block;

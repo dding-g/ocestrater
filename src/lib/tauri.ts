@@ -235,7 +235,7 @@ export async function listShortcuts(): Promise<ShortcutConfig> {
 }
 
 export async function saveShortcuts(shortcuts: ShortcutConfig): Promise<void> {
-  return invoke("save_shortcuts", { shortcuts });
+  return invoke("save_shortcuts", { config: shortcuts });
 }
 
 export function onShortcutsUpdated(

@@ -37,12 +37,18 @@ export default function ModelSelector(props: Props) {
 
   // Attach/detach global listeners based on open state
   // Use createEffect-like pattern via event handlers
+  let listenersAttached = false;
+
   function attachListeners() {
+    if (listenersAttached) return;
+    listenersAttached = true;
     document.addEventListener("mousedown", handleClickOutside);
     document.addEventListener("keydown", handleKeyDown);
   }
 
   function detachListeners() {
+    if (!listenersAttached) return;
+    listenersAttached = false;
     document.removeEventListener("mousedown", handleClickOutside);
     document.removeEventListener("keydown", handleKeyDown);
   }

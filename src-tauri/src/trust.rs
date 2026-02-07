@@ -2,6 +2,13 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+
+/// Process-level lock to prevent concurrent file access to trust.json
+fn trust_file_lock() -> &'static std::sync::Mutex<()> {
+    static LOCK: OnceLock<std::sync::Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| std::sync::Mutex::new(()))
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrustStore {
@@ -97,6 +104,7 @@ fn compute_snippets_hash(repo_path: &str) -> Option<String> {
 
 /// Check trust status for a repo per the algorithm in the spec (section 2.4)
 pub fn check_trust(repo_path: &str) -> Result<TrustStatus, String> {
+    let _guard = trust_file_lock().lock().map_err(|e| e.to_string())?;
     let store = load_trust_store();
 
     if store.trust_all_repos {
@@ -139,6 +147,7 @@ pub fn check_trust(repo_path: &str) -> Result<TrustStatus, String> {
 
 /// Grant trust for a repo: compute current hashes and store
 pub fn grant_trust(repo_path: &str) -> Result<(), String> {
+    let _guard = trust_file_lock().lock().map_err(|e| e.to_string())?;
     let mut store = load_trust_store();
 
     let now = chrono_iso8601_now();
@@ -160,6 +169,7 @@ pub fn grant_trust(repo_path: &str) -> Result<(), String> {
 
 /// Revoke trust for a repo
 pub fn revoke_trust(repo_path: &str) -> Result<(), String> {
+    let _guard = trust_file_lock().lock().map_err(|e| e.to_string())?;
     let mut store = load_trust_store();
 
     if let Some(entry) = store.repos.get_mut(repo_path) {
