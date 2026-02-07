@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::Path;
 use std::process::Command;
 use uuid::Uuid;
 
@@ -44,10 +43,22 @@ impl WorkspaceManager {
         agent: &str,
         worktree_dir: &str,
     ) -> Result<WorkspaceInfo, String> {
+        // Canonicalize repo_path to resolve symlinks and prevent path traversal
+        let canonical_repo = std::fs::canonicalize(repo_path)
+            .map_err(|e| format!("invalid repo path: {e}"))?;
+
+        // Validate it is a git repository
+        if !canonical_repo.join(".git").exists() {
+            return Err(format!(
+                "not a git repository: {}",
+                canonical_repo.display()
+            ));
+        }
+
         let id = Uuid::new_v4().to_string();
         let short_id = &id[..8];
         let worktree_name = format!("{branch}-{short_id}");
-        let worktree_path = Path::new(repo_path)
+        let worktree_path = canonical_repo
             .join(worktree_dir)
             .join(&worktree_name);
 
@@ -57,12 +68,24 @@ impl WorkspaceManager {
                 .map_err(|e| format!("mkdir error: {e}"))?;
         }
 
+        // After directory creation, canonicalize the worktree path and verify
+        // it stays under the canonical repo to prevent traversal via worktree_dir
+        let canonical_wt = std::fs::canonicalize(worktree_path.parent().unwrap())
+            .map_err(|e| format!("invalid worktree path: {e}"))?
+            .join(&worktree_name);
+        if !canonical_wt.starts_with(&canonical_repo) {
+            return Err("worktree path escapes repository directory".into());
+        }
+
+        let canonical_repo_str = canonical_repo.to_string_lossy().to_string();
+        let canonical_wt_str = canonical_wt.to_string_lossy().to_string();
+
         let ws = WorkspaceInfo {
             id: id.clone(),
-            repo_path: repo_path.to_string(),
+            repo_path: canonical_repo_str.clone(),
             repo_alias: repo_alias.to_string(),
             branch: branch.to_string(),
-            worktree_path: worktree_path.to_string_lossy().to_string(),
+            worktree_path: canonical_wt_str.clone(),
             agent: agent.to_string(),
             state: WorkspaceState::Creating,
         };
@@ -72,9 +95,9 @@ impl WorkspaceManager {
         // Create git worktree
         let output = Command::new("git")
             .args(["worktree", "add", "-b", &worktree_name])
-            .arg(worktree_path.to_string_lossy().as_ref())
-            .arg(self.resolve_base_branch(repo_path))
-            .current_dir(repo_path)
+            .arg(&canonical_wt_str)
+            .arg(self.resolve_base_branch(&canonical_repo_str))
+            .current_dir(&canonical_repo)
             .output()
             .map_err(|e| format!("git worktree error: {e}"))?;
 
