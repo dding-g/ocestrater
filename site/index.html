@@ -1,0 +1,742 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Ocestrater — AI Agent Orchestrator</title>
+  <meta name="description" content="High-performance AI agent orchestrator for managing workspaces, code review, and secure command execution." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <style>
+    /* ── Reset & Base ─────────────────────────────────────────── */
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+    :root {
+      --bg:        #0a0a0f;
+      --bg-card:   #12121a;
+      --bg-code:   #1a1a26;
+      --border:    rgba(255,255,255,0.06);
+      --border-hl: rgba(74,158,255,0.25);
+      --text:      #e8e8ef;
+      --text-dim:  #8888a0;
+      --accent:    #4a9eff;
+      --accent2:   #7c5cfc;
+      --accent3:   #00d4aa;
+      --glow:      rgba(74,158,255,0.15);
+      --glow2:     rgba(124,92,252,0.12);
+      --radius:    12px;
+      --font:      'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+      --mono:      'JetBrains Mono', 'SF Mono', monospace;
+    }
+
+    html { scroll-behavior: smooth; }
+    body {
+      font-family: var(--font);
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+      overflow-x: hidden;
+    }
+    a { color: var(--accent); text-decoration: none; }
+    img { max-width: 100%; display: block; }
+
+    /* ── Utility ──────────────────────────────────────────────── */
+    .container { max-width: 1140px; margin: 0 auto; padding: 0 24px; }
+    .section   { padding: 100px 0; position: relative; }
+
+    /* ── Animated background grid ─────────────────────────────── */
+    .bg-grid {
+      position: fixed; inset: 0; z-index: -2; pointer-events: none;
+      background-image:
+        linear-gradient(rgba(255,255,255,0.02) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255,255,255,0.02) 1px, transparent 1px);
+      background-size: 60px 60px;
+    }
+    .bg-glow {
+      position: fixed; z-index: -1; pointer-events: none;
+      width: 700px; height: 700px; border-radius: 50%;
+      filter: blur(120px); opacity: 0.4;
+    }
+    .bg-glow--1 { top: -200px; left: -100px; background: var(--glow); }
+    .bg-glow--2 { bottom: -300px; right: -150px; background: var(--glow2); }
+
+    /* ── Navigation ───────────────────────────────────────────── */
+    .nav {
+      position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+      padding: 16px 0;
+      background: rgba(10,10,15,0.7);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border-bottom: 1px solid var(--border);
+      transition: padding 0.3s;
+    }
+    .nav.scrolled { padding: 10px 0; }
+    .nav .container { display: flex; align-items: center; justify-content: space-between; }
+    .nav-logo {
+      display: flex; align-items: center; gap: 10px;
+      font-weight: 700; font-size: 20px; letter-spacing: -0.3px;
+    }
+    .nav-logo svg { width: 32px; height: 32px; }
+    .nav-links { display: flex; gap: 32px; list-style: none; }
+    .nav-links a { color: var(--text-dim); font-size: 14px; font-weight: 500; transition: color 0.2s; }
+    .nav-links a:hover { color: var(--text); }
+    .nav-cta {
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 8px 20px; border-radius: 8px;
+      background: var(--accent); color: #fff;
+      font-weight: 600; font-size: 14px;
+      transition: transform 0.2s, box-shadow 0.2s;
+    }
+    .nav-cta:hover { transform: translateY(-1px); box-shadow: 0 4px 20px var(--glow); }
+
+    /* ── Hero ──────────────────────────────────────────────────── */
+    .hero {
+      min-height: 100vh; display: flex; align-items: center;
+      padding-top: 80px; text-align: center;
+    }
+    .hero .container { max-width: 860px; }
+    .hero-badge {
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 6px 16px; border-radius: 50px;
+      background: rgba(74,158,255,0.08);
+      border: 1px solid rgba(74,158,255,0.18);
+      font-size: 13px; font-weight: 500; color: var(--accent);
+      margin-bottom: 28px;
+    }
+    .hero-badge .dot {
+      width: 6px; height: 6px; border-radius: 50%;
+      background: var(--accent3);
+      animation: pulse 2s infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+    .hero h1 {
+      font-size: clamp(40px, 6vw, 72px);
+      font-weight: 800; line-height: 1.1;
+      letter-spacing: -2px;
+      margin-bottom: 24px;
+    }
+    .hero h1 .gradient {
+      background: linear-gradient(135deg, var(--accent), var(--accent2), var(--accent3));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    .hero p {
+      font-size: clamp(16px, 2vw, 20px);
+      color: var(--text-dim); max-width: 600px;
+      margin: 0 auto 40px;
+      line-height: 1.7;
+    }
+    .hero-actions { display: flex; gap: 16px; justify-content: center; flex-wrap: wrap; }
+    .btn {
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 14px 28px; border-radius: 10px;
+      font-weight: 600; font-size: 15px;
+      transition: all 0.25s; cursor: pointer; border: none;
+    }
+    .btn-primary {
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      color: #fff; box-shadow: 0 4px 24px var(--glow);
+    }
+    .btn-primary:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 8px 32px rgba(74,158,255,0.3);
+    }
+    .btn-secondary {
+      background: rgba(255,255,255,0.05);
+      border: 1px solid var(--border);
+      color: var(--text);
+    }
+    .btn-secondary:hover {
+      background: rgba(255,255,255,0.08);
+      border-color: rgba(255,255,255,0.12);
+      transform: translateY(-2px);
+    }
+
+    /* ── Terminal Preview ──────────────────────────────────────── */
+    .terminal-preview {
+      margin-top: 64px;
+      border-radius: 16px;
+      border: 1px solid var(--border);
+      background: var(--bg-code);
+      overflow: hidden;
+      box-shadow: 0 24px 80px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.03);
+    }
+    .terminal-bar {
+      display: flex; align-items: center; gap: 8px;
+      padding: 12px 16px;
+      background: rgba(255,255,255,0.02);
+      border-bottom: 1px solid var(--border);
+    }
+    .terminal-dot {
+      width: 12px; height: 12px; border-radius: 50%;
+    }
+    .terminal-dot--red   { background: #ff5f57; }
+    .terminal-dot--yel   { background: #febc2e; }
+    .terminal-dot--grn   { background: #28c840; }
+    .terminal-title {
+      flex: 1; text-align: center;
+      font-size: 12px; color: var(--text-dim); font-family: var(--mono);
+    }
+    .terminal-body {
+      padding: 24px; font-family: var(--mono); font-size: 13px; line-height: 1.8;
+      min-height: 220px;
+    }
+    .terminal-body .line { opacity: 0; animation: typeLine 0.4s forwards; }
+    .terminal-body .prompt { color: var(--accent3); }
+    .terminal-body .cmd    { color: var(--text); }
+    .terminal-body .out    { color: var(--text-dim); }
+    .terminal-body .hl     { color: var(--accent); }
+    .terminal-body .ok     { color: var(--accent3); }
+    .terminal-body .warn   { color: #febc2e; }
+    @keyframes typeLine {
+      from { opacity: 0; transform: translateY(6px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    .terminal-body .line:nth-child(1)  { animation-delay: 0.3s; }
+    .terminal-body .line:nth-child(2)  { animation-delay: 0.6s; }
+    .terminal-body .line:nth-child(3)  { animation-delay: 0.9s; }
+    .terminal-body .line:nth-child(4)  { animation-delay: 1.2s; }
+    .terminal-body .line:nth-child(5)  { animation-delay: 1.5s; }
+    .terminal-body .line:nth-child(6)  { animation-delay: 1.8s; }
+    .terminal-body .line:nth-child(7)  { animation-delay: 2.1s; }
+    .terminal-body .line:nth-child(8)  { animation-delay: 2.4s; }
+
+    /* ── Features ──────────────────────────────────────────────── */
+    .features-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 24px;
+    }
+    .feature-card {
+      padding: 32px;
+      border-radius: var(--radius);
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      transition: border-color 0.3s, transform 0.3s, box-shadow 0.3s;
+      position: relative; overflow: hidden;
+    }
+    .feature-card::before {
+      content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px;
+      background: linear-gradient(90deg, transparent, var(--accent), transparent);
+      opacity: 0; transition: opacity 0.3s;
+    }
+    .feature-card:hover {
+      border-color: var(--border-hl);
+      transform: translateY(-4px);
+      box-shadow: 0 12px 40px rgba(0,0,0,0.3);
+    }
+    .feature-card:hover::before { opacity: 1; }
+    .feature-icon {
+      width: 48px; height: 48px; border-radius: 10px;
+      display: flex; align-items: center; justify-content: center;
+      margin-bottom: 20px; font-size: 22px;
+    }
+    .feature-icon--blue   { background: rgba(74,158,255,0.1);  color: var(--accent);  }
+    .feature-icon--purple { background: rgba(124,92,252,0.1);  color: var(--accent2); }
+    .feature-icon--green  { background: rgba(0,212,170,0.1);   color: var(--accent3); }
+    .feature-icon--orange { background: rgba(255,152,0,0.1);   color: #ff9800;        }
+    .feature-icon--red    { background: rgba(244,67,54,0.1);   color: #f44336;        }
+    .feature-icon--cyan   { background: rgba(0,188,212,0.1);   color: #00bcd4;        }
+    .feature-card h3 {
+      font-size: 18px; font-weight: 700; margin-bottom: 10px;
+      letter-spacing: -0.3px;
+    }
+    .feature-card p { color: var(--text-dim); font-size: 14px; line-height: 1.7; }
+
+    /* ── Section titles ───────────────────────────────────────── */
+    .section-label {
+      font-size: 13px; font-weight: 600; text-transform: uppercase;
+      letter-spacing: 2px; color: var(--accent); margin-bottom: 12px;
+    }
+    .section-title {
+      font-size: clamp(28px, 4vw, 44px); font-weight: 800;
+      letter-spacing: -1.5px; margin-bottom: 16px;
+    }
+    .section-desc {
+      font-size: 17px; color: var(--text-dim); max-width: 560px;
+      margin-bottom: 56px; line-height: 1.7;
+    }
+    .section-header--center { text-align: center; }
+    .section-header--center .section-desc { margin-left: auto; margin-right: auto; }
+
+    /* ── Architecture ─────────────────────────────────────────── */
+    .arch-visual {
+      display: grid; grid-template-columns: 1fr auto 1fr; gap: 32px;
+      align-items: center;
+    }
+    .arch-box {
+      padding: 28px; border-radius: var(--radius);
+      border: 1px solid var(--border); background: var(--bg-card);
+    }
+    .arch-box h4 { font-size: 14px; font-weight: 600; color: var(--accent); margin-bottom: 16px; text-transform: uppercase; letter-spacing: 1px; }
+    .arch-box ul { list-style: none; }
+    .arch-box li {
+      padding: 8px 0; font-size: 14px; color: var(--text-dim);
+      display: flex; align-items: center; gap: 10px;
+    }
+    .arch-box li::before {
+      content: ''; width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0;
+    }
+    .arch-left li::before  { background: var(--accent); }
+    .arch-right li::before { background: var(--accent2); }
+    .arch-center {
+      display: flex; flex-direction: column; align-items: center; gap: 12px;
+    }
+    .arch-core {
+      width: 140px; height: 140px; border-radius: 50%;
+      background: linear-gradient(135deg, rgba(74,158,255,0.1), rgba(124,92,252,0.1));
+      border: 2px solid var(--border-hl);
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      position: relative;
+    }
+    .arch-core::after {
+      content: ''; position: absolute; inset: -8px; border-radius: 50%;
+      border: 1px dashed rgba(74,158,255,0.15);
+      animation: spin 20s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .arch-core svg { width: 36px; height: 36px; margin-bottom: 6px; }
+    .arch-core span { font-size: 12px; font-weight: 700; letter-spacing: 1px; color: var(--accent); text-transform: uppercase; }
+    .arch-arrow { color: var(--text-dim); font-size: 20px; }
+
+    /* ── Code snippet showcase ────────────────────────────────── */
+    .code-showcase {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 40px;
+      align-items: center;
+    }
+    .code-block {
+      border-radius: var(--radius); overflow: hidden;
+      border: 1px solid var(--border); background: var(--bg-code);
+      box-shadow: 0 12px 40px rgba(0,0,0,0.3);
+    }
+    .code-header {
+      display: flex; align-items: center; gap: 8px;
+      padding: 10px 16px; border-bottom: 1px solid var(--border);
+      background: rgba(255,255,255,0.02);
+    }
+    .code-header .dot { width: 10px; height: 10px; border-radius: 50%; }
+    .code-header .filename {
+      margin-left: auto; font-family: var(--mono);
+      font-size: 12px; color: var(--text-dim);
+    }
+    .code-body {
+      padding: 20px; font-family: var(--mono);
+      font-size: 13px; line-height: 2; overflow-x: auto;
+      white-space: pre;
+    }
+    .code-body .kw  { color: var(--accent2); }
+    .code-body .fn  { color: #7dd3fc; }
+    .code-body .str { color: var(--accent3); }
+    .code-body .cm  { color: #555; font-style: italic; }
+    .code-body .typ { color: #febc2e; }
+    .code-body .num { color: #f97583; }
+
+    .code-text h3 {
+      font-size: 28px; font-weight: 800; letter-spacing: -1px; margin-bottom: 16px;
+    }
+    .code-text p { color: var(--text-dim); font-size: 15px; line-height: 1.8; margin-bottom: 20px; }
+    .code-text ul { list-style: none; }
+    .code-text li {
+      padding: 6px 0; font-size: 14px; color: var(--text-dim);
+      display: flex; align-items: center; gap: 10px;
+    }
+    .code-text li .check { color: var(--accent3); font-weight: bold; }
+
+    /* ── Stats ─────────────────────────────────────────────────── */
+    .stats {
+      display: grid; grid-template-columns: repeat(4, 1fr); gap: 24px;
+      padding: 60px 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border);
+    }
+    .stat { text-align: center; }
+    .stat-num {
+      font-size: 48px; font-weight: 800; letter-spacing: -2px;
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    .stat-label { font-size: 14px; color: var(--text-dim); margin-top: 4px; }
+
+    /* ── CTA ───────────────────────────────────────────────────── */
+    .cta {
+      text-align: center; padding: 120px 0;
+    }
+    .cta h2 {
+      font-size: clamp(32px, 5vw, 52px); font-weight: 800;
+      letter-spacing: -1.5px; margin-bottom: 20px;
+    }
+    .cta p { color: var(--text-dim); font-size: 18px; margin-bottom: 40px; max-width: 500px; margin-left: auto; margin-right: auto; }
+
+    /* ── Footer ────────────────────────────────────────────────── */
+    .footer {
+      padding: 40px 0;
+      border-top: 1px solid var(--border);
+    }
+    .footer .container {
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .footer-copy { font-size: 13px; color: var(--text-dim); }
+    .footer-links { display: flex; gap: 24px; list-style: none; }
+    .footer-links a { font-size: 13px; color: var(--text-dim); transition: color 0.2s; }
+    .footer-links a:hover { color: var(--text); }
+
+    /* ── Scroll animations ────────────────────────────────────── */
+    .fade-up {
+      opacity: 0; transform: translateY(30px);
+      transition: opacity 0.6s ease-out, transform 0.6s ease-out;
+    }
+    .fade-up.visible { opacity: 1; transform: translateY(0); }
+
+    /* ── Responsive ───────────────────────────────────────────── */
+    @media (max-width: 900px) {
+      .arch-visual { grid-template-columns: 1fr; }
+      .arch-center { order: -1; }
+      .code-showcase { grid-template-columns: 1fr; }
+      .code-text { order: -1; }
+      .stats { grid-template-columns: repeat(2, 1fr); }
+      .nav-links { display: none; }
+    }
+    @media (max-width: 600px) {
+      .section { padding: 60px 0; }
+      .hero { min-height: auto; padding-top: 120px; padding-bottom: 60px; }
+      .features-grid { grid-template-columns: 1fr; }
+      .stats { grid-template-columns: 1fr; }
+      .footer .container { flex-direction: column; gap: 16px; }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Background -->
+  <div class="bg-grid"></div>
+  <div class="bg-glow bg-glow--1"></div>
+  <div class="bg-glow bg-glow--2"></div>
+
+  <!-- Nav -->
+  <nav class="nav" id="nav">
+    <div class="container">
+      <a href="#" class="nav-logo">
+        <svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <rect width="32" height="32" rx="8" fill="url(#logo-grad)"/>
+          <path d="M8 16c0-4.4 3.6-8 8-8s8 3.6 8 8" stroke="#fff" stroke-width="2" stroke-linecap="round"/>
+          <path d="M12 16c0-2.2 1.8-4 4-4s4 1.8 4 4" stroke="#fff" stroke-width="2" stroke-linecap="round"/>
+          <circle cx="16" cy="16" r="1.5" fill="#fff"/>
+          <path d="M16 17.5v6" stroke="#fff" stroke-width="2" stroke-linecap="round"/>
+          <path d="M13 21h6" stroke="#fff" stroke-width="2" stroke-linecap="round"/>
+          <defs>
+            <linearGradient id="logo-grad" x1="0" y1="0" x2="32" y2="32">
+              <stop stop-color="#4a9eff"/><stop offset="1" stop-color="#7c5cfc"/>
+            </linearGradient>
+          </defs>
+        </svg>
+        Ocestrater
+      </a>
+      <ul class="nav-links">
+        <li><a href="#features">Features</a></li>
+        <li><a href="#architecture">Architecture</a></li>
+        <li><a href="#security">Security</a></li>
+        <li><a href="https://github.com/dding-g/ocestrater" target="_blank">GitHub</a></li>
+      </ul>
+      <a href="https://github.com/dding-g/ocestrater" target="_blank" class="nav-cta">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+        Star on GitHub
+      </a>
+    </div>
+  </nav>
+
+  <!-- Hero -->
+  <section class="hero">
+    <div class="container">
+      <div class="hero-badge">
+        <span class="dot"></span>
+        Built with Tauri + SolidJS + Rust
+      </div>
+      <h1>
+        Orchestrate AI Agents<br/>
+        <span class="gradient">at Lightning Speed</span>
+      </h1>
+      <p>
+        A high-performance desktop application for managing multi-agent workspaces,
+        automated code review, and secure command execution &mdash; all in one place.
+      </p>
+      <div class="hero-actions">
+        <a href="https://github.com/dding-g/ocestrater" target="_blank" class="btn btn-primary">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          Get Started
+        </a>
+        <a href="#features" class="btn btn-secondary">
+          Learn More
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg>
+        </a>
+      </div>
+
+      <!-- Terminal mockup -->
+      <div class="terminal-preview fade-up">
+        <div class="terminal-bar">
+          <div class="terminal-dot terminal-dot--red"></div>
+          <div class="terminal-dot terminal-dot--yel"></div>
+          <div class="terminal-dot terminal-dot--grn"></div>
+          <div class="terminal-title">ocestrater &mdash; agent session</div>
+          <div style="width: 36px;"></div>
+        </div>
+        <div class="terminal-body">
+          <div class="line"><span class="prompt">$</span> <span class="cmd">ocestrater init --workspace my-project</span></div>
+          <div class="line"><span class="out">&nbsp;&nbsp;Workspace initialized. 3 agents ready.</span></div>
+          <div class="line">&nbsp;</div>
+          <div class="line"><span class="prompt">$</span> <span class="cmd">ocestrater review --branch feature/auth</span></div>
+          <div class="line"><span class="out">&nbsp;&nbsp;Scanning 14 changed files across 3 commits...</span></div>
+          <div class="line"><span class="out">&nbsp;&nbsp;Found <span class="warn">2 warnings</span>, <span class="ok">0 critical issues</span></span></div>
+          <div class="line">&nbsp;</div>
+          <div class="line"><span class="ok">&nbsp;&nbsp;Review complete. All agents finished in 1.2s</span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Features -->
+  <section class="section" id="features">
+    <div class="container">
+      <div class="section-header--center fade-up">
+        <div class="section-label">Features</div>
+        <h2 class="section-title">Everything you need to orchestrate</h2>
+        <p class="section-desc">
+          Purpose-built for developers who manage complex AI workflows across multiple repositories and branches.
+        </p>
+      </div>
+      <div class="features-grid">
+        <div class="feature-card fade-up">
+          <div class="feature-icon feature-icon--blue">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M12 1v4m0 14v4M4.22 4.22l2.83 2.83m9.9 9.9l2.83 2.83M1 12h4m14 0h4M4.22 19.78l2.83-2.83m9.9-9.9l2.83-2.83"/></svg>
+          </div>
+          <h3>Multi-Agent Orchestration</h3>
+          <p>Run multiple AI agents in parallel across workspaces. Coordinate tasks, share context, and merge results seamlessly.</p>
+        </div>
+        <div class="feature-card fade-up">
+          <div class="feature-icon feature-icon--purple">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M16 18l6-6-6-6"/><path d="M8 6l-6 6 6 6"/></svg>
+          </div>
+          <h3>Automated Code Review</h3>
+          <p>Full diff viewing with file tree navigation. AI-powered review suggestions on every commit, branch, and pull request.</p>
+        </div>
+        <div class="feature-card fade-up">
+          <div class="feature-icon feature-icon--green">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z"/></svg>
+          </div>
+          <h3>Git Integration</h3>
+          <p>Deep git operations: diff parsing, merge strategies, conflict detection, and branch management built into every workflow.</p>
+        </div>
+        <div class="feature-card fade-up">
+          <div class="feature-icon feature-icon--orange">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8m-4-4v4"/></svg>
+          </div>
+          <h3>Integrated Terminal</h3>
+          <p>Full PTY terminal with session caching. Execute commands, inspect output, and manage processes without leaving the app.</p>
+        </div>
+        <div class="feature-card fade-up">
+          <div class="feature-icon feature-icon--red">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+          </div>
+          <h3>Security First</h3>
+          <p>Trust dialogs for command execution, secure keychain credential storage, and sandboxed agent environments by default.</p>
+        </div>
+        <div class="feature-card fade-up">
+          <div class="feature-icon feature-icon--cyan">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+          </div>
+          <h3>Blazing Performance</h3>
+          <p>Rust backend with Tokio async runtime. Tauri's lightweight footprint means minimal memory usage and instant startup.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Architecture -->
+  <section class="section" id="architecture" style="overflow: hidden;">
+    <div class="container">
+      <div class="section-header--center fade-up">
+        <div class="section-label">Architecture</div>
+        <h2 class="section-title">Built on a modern stack</h2>
+        <p class="section-desc">
+          A carefully chosen technology stack that balances performance, safety, and developer experience.
+        </p>
+      </div>
+      <div class="arch-visual fade-up">
+        <div class="arch-box arch-left">
+          <h4>Frontend</h4>
+          <ul>
+            <li>SolidJS reactive components</li>
+            <li>TypeScript type safety</li>
+            <li>Vite hot module reload</li>
+            <li>Xterm.js terminal</li>
+            <li>Resizable panel layout</li>
+          </ul>
+        </div>
+        <div class="arch-center">
+          <div class="arch-arrow">&larr;</div>
+          <div class="arch-core">
+            <svg viewBox="0 0 36 36" fill="none" stroke="currentColor" stroke-width="1.5">
+              <circle cx="18" cy="18" r="4" stroke="var(--accent)"/>
+              <circle cx="18" cy="6" r="2.5" stroke="var(--accent2)"/>
+              <circle cx="28" cy="24" r="2.5" stroke="var(--accent2)"/>
+              <circle cx="8" cy="24" r="2.5" stroke="var(--accent2)"/>
+              <line x1="18" y1="14" x2="18" y2="8.5" stroke="var(--text-dim)"/>
+              <line x1="21.5" y1="20.5" x2="26" y2="22.5" stroke="var(--text-dim)"/>
+              <line x1="14.5" y1="20.5" x2="10" y2="22.5" stroke="var(--text-dim)"/>
+            </svg>
+            <span>Tauri IPC</span>
+          </div>
+          <div class="arch-arrow">&rarr;</div>
+        </div>
+        <div class="arch-box arch-right">
+          <h4>Backend</h4>
+          <ul>
+            <li>Rust with Tokio runtime</li>
+            <li>Agent orchestration engine</li>
+            <li>Git operations &amp; diff parser</li>
+            <li>Secure keychain access</li>
+            <li>PTY process management</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Code showcase / Security -->
+  <section class="section" id="security">
+    <div class="container">
+      <div class="code-showcase fade-up">
+        <div class="code-block">
+          <div class="code-header">
+            <div class="dot" style="background:#ff5f57;"></div>
+            <div class="dot" style="background:#febc2e;"></div>
+            <div class="dot" style="background:#28c840;"></div>
+            <span class="filename">agent.rs</span>
+          </div>
+          <div class="code-body"><span class="kw">pub async fn</span> <span class="fn">orchestrate</span>(
+    agents: <span class="typ">Vec</span>&lt;<span class="typ">AgentConfig</span>&gt;,
+    workspace: &amp;<span class="typ">Workspace</span>,
+) -&gt; <span class="typ">Result</span>&lt;<span class="typ">Vec</span>&lt;<span class="typ">AgentResult</span>&gt;&gt; {
+    <span class="cm">// Launch agents in parallel</span>
+    <span class="kw">let</span> handles = agents
+        .<span class="fn">iter</span>()
+        .<span class="fn">map</span>(|a| <span class="fn">spawn_agent</span>(a, workspace))
+        .<span class="fn">collect</span>::&lt;<span class="typ">Vec</span>&lt;_&gt;&gt;();
+
+    <span class="cm">// Await all results with timeout</span>
+    <span class="kw">let</span> results = <span class="fn">join_all</span>(handles)
+        .<span class="kw">await</span>
+        .<span class="fn">into_iter</span>()
+        .<span class="fn">collect</span>::&lt;<span class="typ">Result</span>&lt;_&gt;&gt;()?;
+
+    <span class="typ">Ok</span>(results)
+}</div>
+        </div>
+        <div class="code-text">
+          <h3>Secure by design</h3>
+          <p>
+            Every command goes through trust verification. Credentials are stored in the OS keychain.
+            Agent sandboxing prevents unauthorized access to your system.
+          </p>
+          <ul>
+            <li><span class="check">&#10003;</span> Trust dialog before command execution</li>
+            <li><span class="check">&#10003;</span> OS-level keychain for API keys</li>
+            <li><span class="check">&#10003;</span> Sandboxed agent environments</li>
+            <li><span class="check">&#10003;</span> SHA-256 workspace verification</li>
+            <li><span class="check">&#10003;</span> Configurable permission policies</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Stats -->
+  <section class="section" style="padding: 0;">
+    <div class="container">
+      <div class="stats fade-up">
+        <div class="stat">
+          <div class="stat-num">12</div>
+          <div class="stat-label">Rust backend modules</div>
+        </div>
+        <div class="stat">
+          <div class="stat-num">10+</div>
+          <div class="stat-label">UI components</div>
+        </div>
+        <div class="stat">
+          <div class="stat-num">&lt;50ms</div>
+          <div class="stat-label">Startup time</div>
+        </div>
+        <div class="stat">
+          <div class="stat-num">~15MB</div>
+          <div class="stat-label">App bundle size</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- CTA -->
+  <section class="cta">
+    <div class="container fade-up">
+      <h2>Ready to orchestrate?</h2>
+      <p>Open source and free. Start managing your AI agents today.</p>
+      <div class="hero-actions" style="justify-content: center;">
+        <a href="https://github.com/dding-g/ocestrater" target="_blank" class="btn btn-primary">
+          <svg width="18" height="18" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+          View on GitHub
+        </a>
+        <a href="https://github.com/dding-g/ocestrater/releases" target="_blank" class="btn btn-secondary">
+          Download Latest
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        </a>
+      </div>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer class="footer">
+    <div class="container">
+      <div class="footer-copy">&copy; 2025 Ocestrater. Open source under MIT License.</div>
+      <ul class="footer-links">
+        <li><a href="https://github.com/dding-g/ocestrater" target="_blank">GitHub</a></li>
+        <li><a href="https://github.com/dding-g/ocestrater/issues" target="_blank">Issues</a></li>
+        <li><a href="https://github.com/dding-g/ocestrater/releases" target="_blank">Releases</a></li>
+      </ul>
+    </div>
+  </footer>
+
+  <!-- Scroll animations -->
+  <script>
+    // Navbar scroll effect
+    const nav = document.getElementById('nav');
+    window.addEventListener('scroll', () => {
+      nav.classList.toggle('scrolled', window.scrollY > 40);
+    });
+
+    // Intersection Observer for fade-up animations
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) {
+            entry.target.classList.add('visible');
+          }
+        });
+      },
+      { threshold: 0.1, rootMargin: '0px 0px -40px 0px' }
+    );
+    document.querySelectorAll('.fade-up').forEach((el) => observer.observe(el));
+
+    // Smooth scroll for anchor links
+    document.querySelectorAll('a[href^="#"]').forEach((anchor) => {
+      anchor.addEventListener('click', (e) => {
+        e.preventDefault();
+        const target = document.querySelector(anchor.getAttribute('href'));
+        if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      });
+    });
+  </script>
+</body>
+</html>
