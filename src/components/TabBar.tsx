@@ -101,12 +101,12 @@ export default function TabBar() {
               {truncate(`${tab.repoAlias}/${tab.branch}`, 28)}
             </span>
             <span class="tab-agent">{tab.agent}</span>
-            <span
+            <button
               class="tab-close"
               onClick={(e) => handleClose(tab.id, tab.status, e)}
             >
               &times;
-            </span>
+            </button>
           </button>
         )}
       </For>

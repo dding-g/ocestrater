@@ -1,4 +1,4 @@
-import { createSignal, onMount, For, Show, onCleanup } from "solid-js";
+import { createSignal, createMemo, onMount, For, Show, onCleanup } from "solid-js";
 import {
   listShortcuts,
   listSecretKeys,
@@ -46,6 +46,8 @@ export default function SettingsModal(props: Props) {
   const [newKeyValue, setNewKeyValue] = createSignal("");
   const [confirmDelete, setConfirmDelete] = createSignal<string | null>(null);
   const [loading, setLoading] = createSignal(false);
+  const [editingKey, setEditingKey] = createSignal<string | null>(null);
+  const [editingValue, setEditingValue] = createSignal("");
 
   onMount(() => {
     loadData();
@@ -71,8 +73,7 @@ export default function SettingsModal(props: Props) {
     }
   }
 
-  function allSecretKeys(): string[] {
-    const stored = new Set(secretKeys());
+  const allSecretKeys = createMemo((): string[] => {
     const all = [...SUGGESTED_KEYS];
     for (const key of secretKeys()) {
       if (!all.includes(key)) {
@@ -80,7 +81,7 @@ export default function SettingsModal(props: Props) {
       }
     }
     return all;
-  }
+  });
 
   function isKeyStored(key: string): boolean {
     return secretKeys().includes(key);
@@ -150,9 +151,20 @@ export default function SettingsModal(props: Props) {
     }
   }
 
-  async function handleSetSuggested(key: string) {
-    const value = window.prompt(`Enter value for ${key}:`);
-    if (!value) return;
+  function startEditSuggested(key: string) {
+    setEditingKey(key);
+    setEditingValue("");
+  }
+
+  function cancelEditSuggested() {
+    setEditingKey(null);
+    setEditingValue("");
+  }
+
+  async function saveEditSuggested() {
+    const key = editingKey();
+    const value = editingValue().trim();
+    if (!key || !value) return;
     try {
       await setSecret(key, value);
       if (!secretKeys().includes(key)) {
@@ -161,6 +173,8 @@ export default function SettingsModal(props: Props) {
     } catch {
       // Failed
     }
+    setEditingKey(null);
+    setEditingValue("");
   }
 
   return (
@@ -203,6 +217,9 @@ export default function SettingsModal(props: Props) {
           </div>
 
           <div class="settings-content">
+            <Show when={loading()}>
+              <div class="settings-loading">Loading...</div>
+            </Show>
             {/* Secrets Tab */}
             <Show when={tab() === "secrets"}>
               <div class="secrets-section">
@@ -216,13 +233,46 @@ export default function SettingsModal(props: Props) {
                           when={isKeyStored(key)}
                           fallback={
                             <div class="secret-actions">
-                              <span class="secret-not-set">(not set)</span>
-                              <button
-                                class="secret-btn"
-                                onClick={() => handleSetSuggested(key)}
+                              <Show
+                                when={editingKey() === key}
+                                fallback={
+                                  <>
+                                    <span class="secret-not-set">(not set)</span>
+                                    <button
+                                      class="secret-btn"
+                                      onClick={() => startEditSuggested(key)}
+                                    >
+                                      Add
+                                    </button>
+                                  </>
+                                }
                               >
-                                Add
-                              </button>
+                                <input
+                                  class="secret-input secret-inline-input"
+                                  type="password"
+                                  placeholder={`Enter value for ${key}`}
+                                  value={editingValue()}
+                                  onInput={(e) => setEditingValue(e.currentTarget.value)}
+                                  onKeyDown={(e) => {
+                                    if (e.key === "Enter") saveEditSuggested();
+                                    else if (e.key === "Escape") cancelEditSuggested();
+                                  }}
+                                  ref={(el) => setTimeout(() => el.focus(), 0)}
+                                />
+                                <button
+                                  class="secret-btn primary"
+                                  onClick={saveEditSuggested}
+                                  disabled={!editingValue().trim()}
+                                >
+                                  Save
+                                </button>
+                                <button
+                                  class="secret-btn"
+                                  onClick={cancelEditSuggested}
+                                >
+                                  Cancel
+                                </button>
+                              </Show>
                             </div>
                           }
                         >
@@ -418,6 +468,13 @@ export default function SettingsModal(props: Props) {
           margin-bottom: 14px;
         }
 
+        .settings-loading {
+          text-align: center;
+          padding: 12px;
+          font-size: 12px;
+          color: var(--text-muted);
+        }
+
         /* Secrets */
         .secret-list {
           display: flex;
@@ -485,6 +542,11 @@ export default function SettingsModal(props: Props) {
         }
         .secret-btn.danger:hover {
           background: rgba(244, 67, 54, 0.15);
+        }
+        .secret-inline-input {
+          width: 160px;
+          font-size: 11px;
+          padding: 3px 8px;
         }
         .secret-add-section {
           border-top: 1px solid var(--border);

@@ -7,7 +7,7 @@
 
 const MODIFIER_ORDER = ["Ctrl", "Alt", "Shift", "Cmd"] as const;
 
-const RESERVED_SHORTCUTS = new Set(["Cmd+Q", "Cmd+H", "Cmd+M"]);
+const RESERVED_SHORTCUTS = new Set(["Cmd+q", "Cmd+h", "Cmd+m"]);
 
 export interface ShortcutConflict {
   binding: string;
@@ -48,8 +48,7 @@ export function normalizeEvent(e: KeyboardEvent): string {
   // Normalize key name
   let key = e.key;
   // Map special keys
-  if (key === ",") key = ",";
-  else if (key === " ") key = "space";
+  if (key === " ") key = "space";
   else key = key.toLowerCase();
 
   return [...modifiers, key].join("+");

@@ -182,7 +182,7 @@ export default function Sidebar(props: Props) {
                   </span>
                   <span class="repo-alias">{repo.alias}</span>
                   <span class="repo-count">{repo.workspaces.length}</span>
-                  <span
+                  <button
                     class="repo-add-ws"
                     onClick={(e) => {
                       e.stopPropagation();
@@ -191,7 +191,7 @@ export default function Sidebar(props: Props) {
                     title="New workspace"
                   >
                     +
-                  </span>
+                  </button>
                 </button>
                 <Show when={expandedRepos().has(repo.path)}>
                   <div class="workspace-list">

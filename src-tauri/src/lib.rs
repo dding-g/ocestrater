@@ -77,6 +77,8 @@ pub fn run() {
             commands::list_shortcuts,
             commands::save_shortcuts,
             commands::switch_agent_model,
+            commands::run_setup_and_start_agent,
+            commands::start_agent_no_setup,
         ])
         .run(tauri::generate_context!())
         .expect("error running ocestrater");

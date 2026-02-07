@@ -7,9 +7,94 @@ use crate::shortcuts::{ShortcutConfig, ShortcutState};
 use crate::snippets::{self, Snippet};
 use crate::trust::{self, TrustStatus};
 use crate::workspace::{WorkspaceInfo, WorkspaceManager, WorkspaceState};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, State};
+
+/// Payload emitted when a repo requires trust verification before running setup
+#[derive(Debug, Clone, Serialize)]
+struct TrustRequiredPayload {
+    workspace_id: String,
+    repo_path: String,
+    script_content: String,
+    changed_files: Vec<String>,
+}
+
+// ── Shared Helpers ──
+
+/// Data extracted from a workspace, used by multiple commands.
+struct WorkspaceContext {
+    agent_name: String,
+    repo_path: String,
+    worktree_path: String,
+}
+
+/// Extract workspace context (agent, repo_path, worktree_path) from the workspace manager.
+fn get_workspace_context(
+    ws_mgr: &Mutex<WorkspaceManager>,
+    workspace_id: &str,
+) -> Result<WorkspaceContext, String> {
+    let ws = ws_mgr.lock().map_err(|e| e.to_string())?;
+    let workspace = ws
+        .get(workspace_id)
+        .ok_or_else(|| format!("workspace not found: {workspace_id}"))?;
+    Ok(WorkspaceContext {
+        agent_name: workspace.agent.clone(),
+        repo_path: workspace.repo_path.clone(),
+        worktree_path: workspace.worktree_path.clone(),
+    })
+}
+
+/// Resolve agent config, fetch secrets, and spawn a PTY for the workspace.
+fn resolve_and_spawn_agent(
+    config: &Mutex<ConfigStore>,
+    pty_mgr: &Mutex<PtyManager>,
+    keychain: &KeychainState,
+    workspace_id: &str,
+    agent_name: String,
+    repo_path: &str,
+    worktree_path: &str,
+    model_override: Option<&str>,
+) -> Result<(), String> {
+    let store = config.lock().map_err(|e| e.to_string())?;
+    let agent_config = store
+        .resolve_agent(repo_path, &agent_name)
+        .ok_or_else(|| format!("unknown agent: {agent_name}"))?;
+    let default_model = agent_config.default_model.clone();
+    drop(store);
+
+    let secret_env = {
+        let kc = keychain.lock().map_err(|e| e.to_string())?;
+        kc.env_vars().clone()
+    };
+
+    let model = model_override.or(default_model.as_deref());
+    let adapter = AgentAdapter::new(agent_name, agent_config);
+    let mut pty = pty_mgr.lock().map_err(|e| e.to_string())?;
+    pty.spawn(workspace_id, &adapter, worktree_path, model, Some(&secret_env))
+}
+
+/// Canonicalize a repo path and verify it is a registered repository.
+fn validate_repo_path(
+    config: &Mutex<ConfigStore>,
+    repo_path: &str,
+) -> Result<String, String> {
+    let canonical = std::fs::canonicalize(repo_path)
+        .map_err(|e| format!("invalid repo path: {e}"))?;
+    let canonical_str = canonical.to_string_lossy().to_string();
+
+    let store = config.lock().map_err(|e| e.to_string())?;
+    let registered = store.global.repositories.iter().any(|r| {
+        // Compare canonicalized paths to handle inconsistent representations
+        std::fs::canonicalize(&r.path)
+            .map(|c| c == canonical)
+            .unwrap_or(r.path == canonical_str)
+    });
+    if !registered {
+        return Err(format!("repository not registered: {canonical_str}"));
+    }
+    Ok(canonical_str)
+}
 
 // ── Config Commands ──
 
@@ -37,15 +122,18 @@ pub fn add_repository(
     path: String,
     alias: String,
 ) -> Result<(), String> {
-    let mut store = config.lock().map_err(|e| e.to_string())?;
+    // Canonicalize path to prevent symlink attacks and inconsistent representations
+    let canonical = std::fs::canonicalize(&path)
+        .map_err(|e| format!("invalid path: {e}"))?;
+    let canonical_str = canonical.to_string_lossy().to_string();
 
     // Validate that the path is a git repo
-    let git_dir = std::path::Path::new(&path).join(".git");
-    if !git_dir.exists() {
-        return Err(format!("not a git repository: {path}"));
+    if !canonical.join(".git").exists() {
+        return Err(format!("not a git repository: {canonical_str}"));
     }
 
-    store.add_repository(path, alias);
+    let mut store = config.lock().map_err(|e| e.to_string())?;
+    store.add_repository(canonical_str, alias);
     store.save_global()
 }
 
@@ -79,85 +167,148 @@ pub struct CreateWorkspaceArgs {
 
 #[tauri::command]
 pub fn create_workspace(
+    app: AppHandle,
     config: State<'_, Mutex<ConfigStore>>,
     ws_mgr: State<'_, Mutex<WorkspaceManager>>,
     pty_mgr: State<'_, Mutex<PtyManager>>,
     keychain: State<'_, KeychainState>,
     args: CreateWorkspaceArgs,
 ) -> Result<WorkspaceInfo, String> {
+    // Validate and canonicalize the repo path
+    let repo_path = validate_repo_path(&config, &args.repo_path)?;
+
     let store = config.lock().map_err(|e| e.to_string())?;
 
     // Resolve agent
     let agent_name = args.agent
         .or_else(|| {
             store.repo_configs
-                .get(&args.repo_path)
+                .get(&repo_path)
                 .and_then(|rc| rc.default_agent.clone())
         })
         .unwrap_or_else(|| store.global.defaults.agent.clone());
 
-    let agent_config = store
-        .resolve_agent(&args.repo_path, &agent_name)
-        .ok_or_else(|| format!("unknown agent: {agent_name}"))?;
-
-    let default_model = agent_config.default_model.clone();
-
     let worktree_dir = store
         .repo_configs
-        .get(&args.repo_path)
+        .get(&repo_path)
         .map(|rc| rc.worktree_dir.clone())
         .unwrap_or_else(|| ".worktrees".into());
 
     let setup_script = store
         .repo_configs
-        .get(&args.repo_path)
+        .get(&repo_path)
         .and_then(|rc| rc.setup_script.clone());
 
     drop(store); // Release config lock
 
-    // Create workspace (git worktree)
+    // Create workspace (git worktree) — workspace.rs now canonicalizes internally
     let mut ws_manager = ws_mgr.lock().map_err(|e| e.to_string())?;
     let ws = ws_manager.create(
-        &args.repo_path,
+        &repo_path,
         &args.repo_alias,
         &args.branch,
         &agent_name,
         &worktree_dir,
     )?;
+    drop(ws_manager);
 
-    // Run setup script if configured
-    if let Some(script) = setup_script {
-        let output = std::process::Command::new("sh")
-            .args(["-c", &script])
-            .current_dir(&ws.worktree_path)
-            .output();
-
-        if let Ok(out) = output {
-            if !out.status.success() {
-                let stderr = String::from_utf8_lossy(&out.stderr);
-                eprintln!("setup script warning: {stderr}");
+    // Trust check for setup scripts
+    if let Some(ref script) = setup_script {
+        let trust_status = trust::check_trust(&repo_path).unwrap_or(TrustStatus::Untrusted);
+        match trust_status {
+            TrustStatus::Trusted => {
+                run_setup_script(script, &ws.worktree_path);
+            }
+            TrustStatus::Untrusted => {
+                let _ = app.emit("trust-required", TrustRequiredPayload {
+                    workspace_id: ws.id.clone(),
+                    repo_path: repo_path.clone(),
+                    script_content: script.clone(),
+                    changed_files: vec![],
+                });
+                return Ok(ws);
+            }
+            TrustStatus::Changed { changed_files } => {
+                let _ = app.emit("trust-required", TrustRequiredPayload {
+                    workspace_id: ws.id.clone(),
+                    repo_path: repo_path.clone(),
+                    script_content: script.clone(),
+                    changed_files,
+                });
+                return Ok(ws);
             }
         }
     }
 
-    // Get cached secrets for PTY injection
-    let secret_env = {
-        let kc = keychain.lock().map_err(|e| e.to_string())?;
-        kc.env_vars().clone()
-    };
-
-    // Spawn agent PTY with default model and secrets
-    let adapter = AgentAdapter::new(agent_name, agent_config);
-    let mut pty = pty_mgr.lock().map_err(|e| e.to_string())?;
-    pty.spawn(
-        &ws.id,
-        &adapter,
-        &ws.worktree_path,
-        default_model.as_deref(),
-        Some(&secret_env),
+    // Spawn agent PTY
+    resolve_and_spawn_agent(
+        &config, &pty_mgr, &keychain,
+        &ws.id, agent_name, &repo_path, &ws.worktree_path, None,
     )?;
 
     Ok(ws)
+}
+
+/// Helper: run a setup script in a worktree directory
+fn run_setup_script(script: &str, worktree_path: &str) {
+    let output = std::process::Command::new("sh")
+        .args(["-c", script])
+        .current_dir(worktree_path)
+        .output();
+
+    if let Ok(out) = output {
+        if !out.status.success() {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            eprintln!("setup script warning: {stderr}");
+        }
+    }
+}
+
+/// Run setup script then start agent (called after user approves trust)
+#[tauri::command]
+pub fn run_setup_and_start_agent(
+    config: State<'_, Mutex<ConfigStore>>,
+    ws_mgr: State<'_, Mutex<WorkspaceManager>>,
+    pty_mgr: State<'_, Mutex<PtyManager>>,
+    keychain: State<'_, KeychainState>,
+    workspace_id: String,
+) -> Result<(), String> {
+    let ctx = get_workspace_context(&ws_mgr, &workspace_id)?;
+
+    // Get setup script
+    let setup_script = {
+        let store = config.lock().map_err(|e| e.to_string())?;
+        store
+            .repo_configs
+            .get(&ctx.repo_path)
+            .and_then(|rc| rc.setup_script.clone())
+    };
+
+    if let Some(script) = setup_script {
+        run_setup_script(&script, &ctx.worktree_path);
+    }
+
+    resolve_and_spawn_agent(
+        &config, &pty_mgr, &keychain,
+        &workspace_id, ctx.agent_name, &ctx.repo_path, &ctx.worktree_path, None,
+    )
+}
+
+/// Start agent without running setup script (called when user denies trust)
+#[tauri::command]
+pub fn start_agent_no_setup(
+    config: State<'_, Mutex<ConfigStore>>,
+    ws_mgr: State<'_, Mutex<WorkspaceManager>>,
+    pty_mgr: State<'_, Mutex<PtyManager>>,
+    keychain: State<'_, KeychainState>,
+    workspace_id: String,
+) -> Result<(), String> {
+    let ctx = get_workspace_context(&ws_mgr, &workspace_id)?;
+
+    resolve_and_spawn_agent(
+        &config, &pty_mgr, &keychain,
+        &workspace_id, ctx.agent_name, &ctx.repo_path, &ctx.worktree_path, None,
+    )
 }
 
 #[tauri::command]
@@ -229,28 +380,32 @@ pub fn run_snippet(
     workspace_id: String,
     snippet_name: String,
 ) -> Result<String, String> {
-    let ws = ws_mgr.lock().map_err(|e| e.to_string())?;
-    let workspace = ws
-        .get(&workspace_id)
-        .ok_or_else(|| format!("workspace not found: {workspace_id}"))?;
+    let ctx = get_workspace_context(&ws_mgr, &workspace_id)?;
 
-    let store = config.lock().map_err(|e| e.to_string())?;
+    let script = {
+        let store = config.lock().map_err(|e| e.to_string())?;
+        store
+            .repo_configs
+            .get(&ctx.repo_path)
+            .and_then(|rc| rc.snippets.get(&snippet_name))
+            .cloned()
+            .ok_or_else(|| format!("snippet not found: {snippet_name}"))?
+    };
 
-    // Look up snippet: repo-level first, then global
-    let script = store
-        .repo_configs
-        .get(&workspace.repo_path)
-        .and_then(|rc| rc.snippets.get(&snippet_name))
-        .cloned()
-        .ok_or_else(|| format!("snippet not found: {snippet_name}"))?;
-
-    let worktree_path = workspace.worktree_path.clone();
-    drop(ws);
-    drop(store);
+    // Trust check for repo-level snippets
+    match trust::check_trust(&ctx.repo_path)? {
+        TrustStatus::Trusted => {}
+        TrustStatus::Untrusted => {
+            return Err("repo not trusted — grant trust before running snippets".to_string());
+        }
+        TrustStatus::Changed { .. } => {
+            return Err("repo trust stale — re-approve trust before running snippets".to_string());
+        }
+    }
 
     let output = std::process::Command::new("sh")
         .args(["-c", &script])
-        .current_dir(&worktree_path)
+        .current_dir(&ctx.worktree_path)
         .output()
         .map_err(|e| format!("snippet exec error: {e}"))?;
 
@@ -271,17 +426,9 @@ pub fn get_worktree_status(
     ws_mgr: State<'_, Mutex<WorkspaceManager>>,
     workspace_id: String,
 ) -> Result<git_ops::WorktreeStatus, String> {
-    let ws = ws_mgr.lock().map_err(|e| e.to_string())?;
-    let workspace = ws
-        .get(&workspace_id)
-        .ok_or_else(|| format!("workspace not found: {workspace_id}"))?;
-
-    let worktree_path = workspace.worktree_path.clone();
-    let repo_path = workspace.repo_path.clone();
-    drop(ws);
-
-    let base_branch = git_ops::detect_base_branch(&repo_path);
-    git_ops::compute_status(&worktree_path, &workspace_id, &base_branch)
+    let ctx = get_workspace_context(&ws_mgr, &workspace_id)?;
+    let base_branch = git_ops::detect_base_branch(&ctx.repo_path);
+    git_ops::compute_status(&ctx.worktree_path, &workspace_id, &base_branch)
 }
 
 #[tauri::command]
@@ -290,21 +437,9 @@ pub fn get_diff(
     workspace_id: String,
     paths: Option<Vec<String>>,
 ) -> Result<Vec<git_ops::FileDiff>, String> {
-    let ws = ws_mgr.lock().map_err(|e| e.to_string())?;
-    let workspace = ws
-        .get(&workspace_id)
-        .ok_or_else(|| format!("workspace not found: {workspace_id}"))?;
-
-    let worktree_path = workspace.worktree_path.clone();
-    let repo_path = workspace.repo_path.clone();
-    drop(ws);
-
-    let base_branch = git_ops::detect_base_branch(&repo_path);
-    git_ops::compute_diff(
-        &worktree_path,
-        &base_branch,
-        paths.as_deref(),
-    )
+    let ctx = get_workspace_context(&ws_mgr, &workspace_id)?;
+    let base_branch = git_ops::detect_base_branch(&ctx.repo_path);
+    git_ops::compute_diff(&ctx.worktree_path, &base_branch, paths.as_deref())
 }
 
 #[tauri::command]
@@ -314,17 +449,9 @@ pub fn get_file_content(
     path: String,
     version: FileVersion,
 ) -> Result<String, String> {
-    let ws = ws_mgr.lock().map_err(|e| e.to_string())?;
-    let workspace = ws
-        .get(&workspace_id)
-        .ok_or_else(|| format!("workspace not found: {workspace_id}"))?;
-
-    let worktree_path = workspace.worktree_path.clone();
-    let repo_path = workspace.repo_path.clone();
-    drop(ws);
-
-    let base_branch = git_ops::detect_base_branch(&repo_path);
-    git_ops::read_file_at_version(&worktree_path, &path, &version, &base_branch)
+    let ctx = get_workspace_context(&ws_mgr, &workspace_id)?;
+    let base_branch = git_ops::detect_base_branch(&ctx.repo_path);
+    git_ops::read_file_at_version(&ctx.worktree_path, &path, &version, &base_branch)
 }
 
 #[tauri::command]
@@ -334,6 +461,7 @@ pub fn merge_workspace(
     strategy: MergeStrategy,
     commit_message: Option<String>,
 ) -> Result<git_ops::MergeResult, String> {
+    // merge_workspace needs workspace state check, so use direct lock
     let ws = ws_mgr.lock().map_err(|e| e.to_string())?;
     let workspace = ws
         .get(&workspace_id)
@@ -347,7 +475,6 @@ pub fn merge_workspace(
     let worktree_path = workspace.worktree_path.clone();
     drop(ws);
 
-    // Detect the worktree branch name from the worktree
     let worktree_branch = detect_worktree_branch(&worktree_path)?;
     let base_branch = git_ops::detect_base_branch(&repo_path);
 
@@ -381,29 +508,22 @@ pub fn discard_workspace(
     workspace_id: String,
 ) -> Result<(), String> {
     // Kill PTY if running
-    let mut pty = pty_mgr.lock().map_err(|e| e.to_string())?;
-    let _ = pty.kill(&workspace_id);
-    drop(pty);
+    {
+        let mut pty = pty_mgr.lock().map_err(|e| e.to_string())?;
+        let _ = pty.kill(&workspace_id);
+    }
 
-    // Transition workspace state so it can be removed
-    let mut ws = ws_mgr.lock().map_err(|e| e.to_string())?;
-    let _ = ws.stop(&workspace_id);
+    // Stop workspace and extract context
+    {
+        let mut ws = ws_mgr.lock().map_err(|e| e.to_string())?;
+        let _ = ws.stop(&workspace_id);
+    }
 
-    let workspace = ws
-        .get(&workspace_id)
-        .ok_or_else(|| format!("workspace not found: {workspace_id}"))?;
+    let ctx = get_workspace_context(&ws_mgr, &workspace_id)?;
+    let branch_name = detect_worktree_branch(&ctx.worktree_path)?;
 
-    let repo_path = workspace.repo_path.clone();
-    let worktree_path = workspace.worktree_path.clone();
-    drop(ws);
+    git_ops::discard_worktree(&ctx.repo_path, &ctx.worktree_path, &branch_name)?;
 
-    // Detect branch name before removing worktree
-    let branch_name = detect_worktree_branch(&worktree_path)?;
-
-    // Remove worktree and delete branch
-    git_ops::discard_worktree(&repo_path, &worktree_path, &branch_name)?;
-
-    // Remove from workspace manager
     let mut ws = ws_mgr.lock().map_err(|e| e.to_string())?;
     ws.remove(&workspace_id)
 }
@@ -432,21 +552,17 @@ pub async fn run_snippet_v2(
     workspace_id: String,
     name: String,
 ) -> Result<(), String> {
-    // Look up workspace
-    let (worktree_path, repo_path) = {
-        let ws = ws_mgr.lock().map_err(|e| e.to_string())?;
-        let workspace = ws
-            .get(&workspace_id)
-            .ok_or_else(|| format!("workspace not found: {workspace_id}"))?;
-        (workspace.worktree_path.clone(), workspace.repo_path.clone())
-    };
+    let ctx = get_workspace_context(&ws_mgr, &workspace_id)?;
+    let worktree_path = ctx.worktree_path;
+    let repo_path = ctx.repo_path;
 
     // Resolve snippet
     let snippet = snippets::resolve_snippet(&repo_path, &name)
         .ok_or_else(|| format!("snippet not found: {name}"))?;
 
-    // Trust check for repo-level snippets
-    if snippets::is_repo_snippet(&repo_path, &name) {
+    // Trust check for repo-level snippets (with TOCTOU protection)
+    let is_repo = snippets::is_repo_snippet(&repo_path, &name);
+    if is_repo {
         match trust::check_trust(&repo_path)? {
             TrustStatus::Trusted => {}
             TrustStatus::Untrusted => {
@@ -458,8 +574,10 @@ pub async fn run_snippet_v2(
         }
     }
 
+    // Capture the command and re-resolve right before execution to prevent TOCTOU
     let command = snippet.command.clone();
     let ws_id = workspace_id.clone();
+    let repo_path_clone = repo_path.clone();
 
     // Emit separator header
     let _ = app.emit(
@@ -470,6 +588,20 @@ pub async fn run_snippet_v2(
     // Spawn child process in background thread
     let app_clone = app.clone();
     std::thread::spawn(move || {
+        // TOCTOU guard: re-verify the snippet command hasn't changed since trust check
+        if is_repo {
+            if let Some(current) = snippets::resolve_snippet(&repo_path_clone, &name) {
+                if current.command != command {
+                    let _ = app_clone.emit(
+                        &format!("snippet-output-{ws_id}"),
+                        "Error: snippet changed after trust check. Aborting.\n".to_string(),
+                    );
+                    let _ = app_clone.emit(&format!("snippet-complete-{ws_id}"), -1);
+                    return;
+                }
+            }
+        }
+
         let child = std::process::Command::new("sh")
             .args(["-c", &command])
             .current_dir(&worktree_path)
@@ -626,11 +758,14 @@ pub fn list_shortcuts(
 
 #[tauri::command]
 pub fn save_shortcuts(
+    app: AppHandle,
     shortcuts: State<'_, ShortcutState>,
     config: ShortcutConfig,
 ) -> Result<(), String> {
     let mut store = shortcuts.lock().map_err(|e| e.to_string())?;
-    store.save(config)
+    store.save(config.clone())?;
+    let _ = app.emit("shortcuts-updated", config);
+    Ok(())
 }
 
 // ── Model Switch Command ──
@@ -644,43 +779,16 @@ pub fn switch_agent_model(
     workspace_id: String,
     model: String,
 ) -> Result<(), String> {
-    // Look up workspace to get agent name and working dir
-    let ws = ws_mgr.lock().map_err(|e| e.to_string())?;
-    let workspace = ws
-        .get(&workspace_id)
-        .ok_or_else(|| format!("workspace not found: {workspace_id}"))?;
+    let ctx = get_workspace_context(&ws_mgr, &workspace_id)?;
 
-    let agent_name = workspace.agent.clone();
-    let repo_path = workspace.repo_path.clone();
-    let worktree_path = workspace.worktree_path.clone();
-    drop(ws);
+    // Kill existing PTY before respawning
+    {
+        let mut pty = pty_mgr.lock().map_err(|e| e.to_string())?;
+        pty.kill(&workspace_id)?;
+    }
 
-    // Resolve agent config
-    let store = config.lock().map_err(|e| e.to_string())?;
-    let agent_config = store
-        .resolve_agent(&repo_path, &agent_name)
-        .ok_or_else(|| format!("unknown agent: {agent_name}"))?;
-    drop(store);
-
-    // Kill existing PTY
-    let mut pty = pty_mgr.lock().map_err(|e| e.to_string())?;
-    pty.kill(&workspace_id)?;
-
-    // Get cached secrets for PTY injection
-    let secret_env = {
-        let kc = keychain.lock().map_err(|e| e.to_string())?;
-        kc.env_vars().clone()
-    };
-
-    // Respawn with new model
-    let adapter = AgentAdapter::new(agent_name, agent_config);
-    pty.spawn(
-        &workspace_id,
-        &adapter,
-        &worktree_path,
-        Some(&model),
-        Some(&secret_env),
-    )?;
-
-    Ok(())
+    resolve_and_spawn_agent(
+        &config, &pty_mgr, &keychain,
+        &workspace_id, ctx.agent_name, &ctx.repo_path, &ctx.worktree_path, Some(&model),
+    )
 }

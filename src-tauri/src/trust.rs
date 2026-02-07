@@ -2,6 +2,13 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+
+/// Process-level lock to prevent concurrent file access to trust.json
+fn trust_file_lock() -> &'static std::sync::Mutex<()> {
+    static LOCK: OnceLock<std::sync::Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| std::sync::Mutex::new(()))
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrustStore {
@@ -21,8 +28,13 @@ fn default_version() -> u32 {
 pub struct TrustEntry {
     pub trusted: bool,
     pub trusted_at: String,
-    pub setup_script_hash: Option<String>,
+    /// Hash of the entire .ocestrater/config.json file (covers all execution-related fields)
+    #[serde(default)]
+    pub config_hash: Option<String>,
     pub snippets_hash: Option<String>,
+    /// Deprecated: only hashed setup_script. Kept for backward-compat deserialization.
+    #[serde(default)]
+    pub setup_script_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -79,8 +91,20 @@ fn sha256_hex(data: &[u8]) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-/// Compute the SHA-256 hash of the setup_script field from the repo's config.json
-fn compute_setup_script_hash(repo_path: &str) -> Option<String> {
+/// Compute the SHA-256 hash of the entire .ocestrater/config.json file.
+/// This covers all execution-related fields (setup_script, agent_overrides,
+/// snippets, worktree_dir, etc.) so any modification is detected.
+fn compute_config_hash(repo_path: &str) -> Option<String> {
+    let config_path = Path::new(repo_path).join(".ocestrater/config.json");
+    let content = std::fs::read(&config_path).ok()?;
+    if content.is_empty() {
+        return None;
+    }
+    Some(sha256_hex(&content))
+}
+
+/// Legacy: compute hash of just the setup_script field for backward-compat checks.
+fn compute_setup_script_hash_legacy(repo_path: &str) -> Option<String> {
     let config_path = Path::new(repo_path).join(".ocestrater/config.json");
     let content = std::fs::read_to_string(&config_path).ok()?;
     let parsed: serde_json::Value = serde_json::from_str(&content).ok()?;
@@ -97,6 +121,7 @@ fn compute_snippets_hash(repo_path: &str) -> Option<String> {
 
 /// Check trust status for a repo per the algorithm in the spec (section 2.4)
 pub fn check_trust(repo_path: &str) -> Result<TrustStatus, String> {
+    let _guard = trust_file_lock().lock().map_err(|e| e.to_string())?;
     let store = load_trust_store();
 
     if store.trust_all_repos {
@@ -115,11 +140,20 @@ pub fn check_trust(repo_path: &str) -> Result<TrustStatus, String> {
     // Compare hashes
     let mut changed_files = Vec::new();
 
-    let current_setup_hash = compute_setup_script_hash(repo_path);
-    if current_setup_hash != entry.setup_script_hash {
-        // Only flag as changed if at least one side is Some (i.e., the field existed before or now)
-        if current_setup_hash.is_some() || entry.setup_script_hash.is_some() {
-            changed_files.push("setup_script".to_string());
+    // Check config_hash (covers all execution-related fields in config.json).
+    // Fall back to legacy setup_script_hash for entries created before config_hash existed.
+    let current_config_hash = compute_config_hash(repo_path);
+    if entry.config_hash.is_some() || current_config_hash.is_some() {
+        if current_config_hash != entry.config_hash {
+            changed_files.push("config.json".to_string());
+        }
+    } else if entry.setup_script_hash.is_some() {
+        // Legacy entry: only had setup_script_hash. Still check it for backward compat.
+        let current_setup_hash = compute_setup_script_hash_legacy(repo_path);
+        if current_setup_hash != entry.setup_script_hash {
+            if current_setup_hash.is_some() || entry.setup_script_hash.is_some() {
+                changed_files.push("config.json".to_string());
+            }
         }
     }
 
@@ -139,10 +173,11 @@ pub fn check_trust(repo_path: &str) -> Result<TrustStatus, String> {
 
 /// Grant trust for a repo: compute current hashes and store
 pub fn grant_trust(repo_path: &str) -> Result<(), String> {
+    let _guard = trust_file_lock().lock().map_err(|e| e.to_string())?;
     let mut store = load_trust_store();
 
     let now = chrono_iso8601_now();
-    let setup_hash = compute_setup_script_hash(repo_path);
+    let config_hash = compute_config_hash(repo_path);
     let snippets_hash = compute_snippets_hash(repo_path);
 
     store.repos.insert(
@@ -150,8 +185,9 @@ pub fn grant_trust(repo_path: &str) -> Result<(), String> {
         TrustEntry {
             trusted: true,
             trusted_at: now,
-            setup_script_hash: setup_hash,
+            config_hash,
             snippets_hash,
+            setup_script_hash: None, // deprecated; config_hash covers everything
         },
     );
 
@@ -160,6 +196,7 @@ pub fn grant_trust(repo_path: &str) -> Result<(), String> {
 
 /// Revoke trust for a repo
 pub fn revoke_trust(repo_path: &str) -> Result<(), String> {
+    let _guard = trust_file_lock().lock().map_err(|e| e.to_string())?;
     let mut store = load_trust_store();
 
     if let Some(entry) = store.repos.get_mut(repo_path) {
@@ -247,13 +284,14 @@ mod tests {
         let entry = TrustEntry {
             trusted: true,
             trusted_at: "2026-02-07T12:00:00Z".into(),
-            setup_script_hash: Some("abc123".into()),
+            config_hash: Some("abc123".into()),
             snippets_hash: None,
+            setup_script_hash: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         let parsed: TrustEntry = serde_json::from_str(&json).unwrap();
         assert!(parsed.trusted);
-        assert_eq!(parsed.setup_script_hash, Some("abc123".into()));
+        assert_eq!(parsed.config_hash, Some("abc123".into()));
         assert!(parsed.snippets_hash.is_none());
     }
 
@@ -265,8 +303,9 @@ mod tests {
             TrustEntry {
                 trusted: true,
                 trusted_at: "2026-01-01T00:00:00Z".into(),
-                setup_script_hash: None,
+                config_hash: None,
                 snippets_hash: None,
+                setup_script_hash: None,
             },
         );
         let store = TrustStore {
@@ -454,14 +493,15 @@ mod tests {
         let entry = TrustEntry {
             trusted: true,
             trusted_at: "2026-01-15T10:30:00Z".into(),
-            setup_script_hash: Some("abc123".into()),
+            config_hash: Some("abc123".into()),
             snippets_hash: Some("def456".into()),
+            setup_script_hash: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         let parsed: TrustEntry = serde_json::from_str(&json).unwrap();
         assert!(parsed.trusted);
         assert_eq!(parsed.trusted_at, "2026-01-15T10:30:00Z");
-        assert_eq!(parsed.setup_script_hash, Some("abc123".into()));
+        assert_eq!(parsed.config_hash, Some("abc123".into()));
         assert_eq!(parsed.snippets_hash, Some("def456".into()));
     }
 
@@ -473,8 +513,9 @@ mod tests {
             TrustEntry {
                 trusted: true,
                 trusted_at: "2026-01-01T00:00:00Z".into(),
-                setup_script_hash: None,
+                config_hash: None,
                 snippets_hash: None,
+                setup_script_hash: None,
             },
         );
         repos.insert(
@@ -482,8 +523,9 @@ mod tests {
             TrustEntry {
                 trusted: false,
                 trusted_at: "2026-01-02T00:00:00Z".into(),
-                setup_script_hash: Some("hash".into()),
+                config_hash: Some("config_hash_value".into()),
                 snippets_hash: None,
+                setup_script_hash: None,
             },
         );
         let store = TrustStore {
@@ -516,8 +558,9 @@ mod tests {
         let entry = TrustEntry {
             trusted: false,
             trusted_at: "2026-06-01T00:00:00Z".into(),
-            setup_script_hash: None,
+            config_hash: None,
             snippets_hash: None,
+            setup_script_hash: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         let parsed: TrustEntry = serde_json::from_str(&json).unwrap();
@@ -538,8 +581,9 @@ mod tests {
             TrustEntry {
                 trusted: true,
                 trusted_at: "2026-03-15T10:00:00Z".into(),
-                setup_script_hash: Some("abc123".into()),
+                config_hash: Some("abc123".into()),
                 snippets_hash: Some("def456".into()),
+                setup_script_hash: None,
             },
         );
         repos.insert(
@@ -547,8 +591,9 @@ mod tests {
             TrustEntry {
                 trusted: false,
                 trusted_at: "2026-03-16T12:00:00Z".into(),
-                setup_script_hash: None,
+                config_hash: None,
                 snippets_hash: None,
+                setup_script_hash: None,
             },
         );
 
@@ -573,12 +618,12 @@ mod tests {
         let test_entry = loaded.repos.get("/test/repo").unwrap();
         assert!(test_entry.trusted);
         assert_eq!(test_entry.trusted_at, "2026-03-15T10:00:00Z");
-        assert_eq!(test_entry.setup_script_hash, Some("abc123".into()));
+        assert_eq!(test_entry.config_hash, Some("abc123".into()));
         assert_eq!(test_entry.snippets_hash, Some("def456".into()));
 
         let another_entry = loaded.repos.get("/another/repo").unwrap();
         assert!(!another_entry.trusted);
-        assert!(another_entry.setup_script_hash.is_none());
+        assert!(another_entry.config_hash.is_none());
     }
 
     #[test]

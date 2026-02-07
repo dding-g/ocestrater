@@ -76,6 +76,9 @@ export default function ShortcutHandler() {
   }
 
   function handleKeyDown(e: KeyboardEvent) {
+    // Ignore modifier-only key presses
+    if (["Control", "Shift", "Alt", "Meta"].includes(e.key)) return;
+
     // Ignore events when focused in contenteditable or certain inputs
     const target = e.target as HTMLElement;
     if (

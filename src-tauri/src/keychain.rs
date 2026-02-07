@@ -1,3 +1,4 @@
+#[cfg(target_os = "macos")]
 use security_framework::passwords::{
     delete_generic_password, get_generic_password, set_generic_password,
 };
@@ -32,8 +33,7 @@ impl KeychainStore {
 
     /// Set a secret in both Keychain and cache
     pub fn set(&mut self, key: &str, value: &str) -> Result<(), String> {
-        set_generic_password(SERVICE, key, value.as_bytes())
-            .map_err(|e| format!("keychain write error: {e}"))?;
+        set_secret_to_keychain(key, value)?;
         self.cache.insert(key.to_string(), value.to_string());
         add_to_index(key)?;
         Ok(())
@@ -41,15 +41,15 @@ impl KeychainStore {
 
     /// Delete a secret from both Keychain and cache
     pub fn delete(&mut self, key: &str) -> Result<(), String> {
-        let _ = delete_generic_password(SERVICE, key);
+        let _ = delete_secret_from_keychain(key);
         self.cache.remove(key);
         remove_from_index(key)?;
         Ok(())
     }
 
-    /// List all stored key names
+    /// List all stored key names (from in-memory cache, not disk)
     pub fn list_keys(&self) -> Vec<String> {
-        load_index().unwrap_or_default()
+        self.cache.keys().cloned().collect()
     }
 
     /// Get all cached secrets as env vars for PTY injection
@@ -58,11 +58,44 @@ impl KeychainStore {
     }
 }
 
+// ── Platform-specific Keychain access ──
+
+#[cfg(target_os = "macos")]
 fn get_secret_from_keychain(key: &str) -> Result<String, String> {
     get_generic_password(SERVICE, key)
         .map(|bytes| String::from_utf8_lossy(&bytes).to_string())
         .map_err(|e| format!("keychain read error: {e}"))
 }
+
+#[cfg(not(target_os = "macos"))]
+fn get_secret_from_keychain(_key: &str) -> Result<String, String> {
+    Err("keychain not available on this platform".to_string())
+}
+
+#[cfg(target_os = "macos")]
+fn set_secret_to_keychain(key: &str, value: &str) -> Result<(), String> {
+    set_generic_password(SERVICE, key, value.as_bytes())
+        .map_err(|e| format!("keychain write error: {e}"))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn set_secret_to_keychain(_key: &str, _value: &str) -> Result<(), String> {
+    // On non-macOS, secrets are stored only in the in-memory cache + index file
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn delete_secret_from_keychain(key: &str) -> Result<(), String> {
+    delete_generic_password(SERVICE, key)
+        .map_err(|e| format!("keychain delete error: {e}"))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn delete_secret_from_keychain(_key: &str) -> Result<(), String> {
+    Ok(())
+}
+
+// ── Index file management (platform-independent) ──
 
 fn index_path() -> PathBuf {
     dirs::home_dir()
@@ -162,11 +195,8 @@ mod tests {
 
     #[test]
     fn test_load_index_nonexistent_file_returns_empty() {
-        // load_index uses the global index_path, so we test the pattern
-        // directly by reading a nonexistent path
         let path = std::path::Path::new("/tmp/ocestrater-test-nonexistent-keychain-index/secret-keys.json");
         assert!(!path.exists());
-        // Simulating load_index logic: if file doesn't exist, return empty
         if !path.exists() {
             let keys: Vec<String> = vec![];
             assert!(keys.is_empty());
@@ -175,15 +205,12 @@ mod tests {
 
     #[test]
     fn test_index_deduplication_logic() {
-        // Test the deduplication logic used by add_to_index
         let tmp = tempfile::tempdir().unwrap();
         let path = temp_index_path(tmp.path());
 
-        // Start with one key
         let keys = vec!["API_KEY".to_string()];
         write_index(&path, &keys);
 
-        // Simulate add_to_index: load, check for duplicates, add if not present
         let mut loaded: Vec<String> = read_index(&path);
         let new_key = "API_KEY".to_string();
         if !loaded.contains(&new_key) {
@@ -192,7 +219,6 @@ mod tests {
         write_index(&path, &loaded);
 
         let final_keys = read_index(&path);
-        // Should still be 1, not 2 (deduplication)
         assert_eq!(final_keys.len(), 1);
         assert_eq!(final_keys[0], "API_KEY");
     }
@@ -205,7 +231,6 @@ mod tests {
         let keys = vec!["API_KEY".to_string()];
         write_index(&path, &keys);
 
-        // Simulate add_to_index: add a new unique key
         let mut loaded: Vec<String> = read_index(&path);
         let new_key = "DB_PASSWORD".to_string();
         if !loaded.contains(&new_key) {
@@ -231,7 +256,6 @@ mod tests {
         ];
         write_index(&path, &keys);
 
-        // Simulate remove_from_index: retain all except KEY_B
         let mut loaded: Vec<String> = read_index(&path);
         loaded.retain(|k| k != "KEY_B");
         write_index(&path, &loaded);
@@ -251,7 +275,6 @@ mod tests {
         let keys = vec!["KEY_A".to_string(), "KEY_B".to_string()];
         write_index(&path, &keys);
 
-        // Simulate remove_from_index for a key that doesn't exist
         let mut loaded: Vec<String> = read_index(&path);
         loaded.retain(|k| k != "NONEXISTENT");
         write_index(&path, &loaded);
@@ -266,10 +289,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let path = temp_index_path(tmp.path());
 
-        // Write invalid JSON
         std::fs::write(&path, "{ not valid json }").unwrap();
 
-        // Simulating load_index behavior: parse fails, should return error
         let content = std::fs::read_to_string(&path).unwrap();
         let result: Result<Vec<String>, _> = serde_json::from_str(&content);
         assert!(result.is_err());
@@ -309,32 +330,31 @@ mod tests {
 
     #[test]
     fn test_keychain_store_cache_operations() {
-        // Test the in-memory HashMap cache operations without touching actual keychain
         let mut cache: HashMap<String, String> = HashMap::new();
 
-        // Set
         cache.insert("KEY1".to_string(), "value1".to_string());
         assert_eq!(cache.get("KEY1"), Some(&"value1".to_string()));
 
-        // Get nonexistent
         assert_eq!(cache.get("NONEXISTENT"), None);
 
-        // Delete
         cache.remove("KEY1");
         assert_eq!(cache.get("KEY1"), None);
     }
 
     #[test]
-    fn test_keychain_store_list_keys_returns_vec() {
-        // Verify that the index file format is Vec<String>
-        let tmp = tempfile::tempdir().unwrap();
-        let path = temp_index_path(tmp.path());
-
-        let keys = vec!["A".to_string(), "B".to_string(), "C".to_string()];
-        write_index(&path, &keys);
-
-        let loaded: Vec<String> = read_index(&path);
-        assert_eq!(loaded.len(), 3);
+    fn test_keychain_store_list_keys_returns_cache_keys() {
+        let store = KeychainStore {
+            cache: {
+                let mut m = HashMap::new();
+                m.insert("A".to_string(), "val_a".to_string());
+                m.insert("B".to_string(), "val_b".to_string());
+                m.insert("C".to_string(), "val_c".to_string());
+                m
+            },
+        };
+        let mut keys = store.list_keys();
+        keys.sort();
+        assert_eq!(keys, vec!["A", "B", "C"]);
     }
 
     #[test]
