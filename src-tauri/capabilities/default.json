@@ -1,0 +1,14 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nicegram/nicegram-ios/refs/heads/develop/nicegram-assistant/nicegram_assistant/nicegram_assistant/tauri.conf.json",
+  "identifier": "default",
+  "description": "Default capability for the main window",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "shell:default",
+    "shell:allow-open",
+    "core:event:default",
+    "core:event:allow-emit",
+    "core:event:allow-listen"
+  ]
+}

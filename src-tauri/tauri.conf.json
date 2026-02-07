@@ -1,0 +1,36 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nicegram/nicegram-ios/refs/heads/develop/nicegram-assistant/nicegram_assistant/nicegram_assistant/tauri.conf.json",
+  "productName": "Ocestrater",
+  "identifier": "com.ocestrater.app",
+  "version": "0.1.0",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "pnpm dev",
+    "beforeBuildCommand": "pnpm build"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "title": "Ocestrater",
+        "width": 1400,
+        "height": 900,
+        "minWidth": 900,
+        "minHeight": 600,
+        "decorations": true,
+        "transparent": false,
+        "titleBarStyle": "Overlay"
+      }
+    ],
+    "macOSPrivateApi": true,
+    "security": {
+      "csp": null
+    }
+  },
+  "plugins": {
+    "shell": {
+      "open": true
+    }
+  }
+}

@@ -1,0 +1,110 @@
+:root {
+  --bg-primary: #1a1a1a;
+  --bg-secondary: #242424;
+  --bg-tertiary: #2d2d2d;
+  --bg-hover: #363636;
+  --border: #3a3a3a;
+  --text-primary: #e8e8e8;
+  --text-secondary: #a0a0a0;
+  --text-muted: #666;
+  --accent: #4a9eff;
+  --accent-hover: #3a8eef;
+  --success: #4caf50;
+  --warning: #ff9800;
+  --error: #f44336;
+  --sidebar-width: 260px;
+  --panel-min: 200px;
+  --header-height: 38px;
+  --font-mono: "SF Mono", "Menlo", "Monaco", monospace;
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui,
+    sans-serif;
+  --radius: 6px;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  color: var(--text-primary);
+  background: var(--bg-primary);
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+}
+
+.app-container {
+  display: flex;
+  height: 100%;
+  width: 100%;
+}
+
+.main-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: var(--panel-min);
+  overflow: hidden;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}
+
+/* Resize handle */
+.resize-handle {
+  width: 3px;
+  cursor: col-resize;
+  background: transparent;
+  transition: background 0.15s;
+  flex-shrink: 0;
+}
+.resize-handle:hover,
+.resize-handle.active {
+  background: var(--accent);
+}
+
+button {
+  font-family: inherit;
+  font-size: inherit;
+  border: none;
+  cursor: pointer;
+  background: none;
+  color: inherit;
+}
+
+input,
+textarea {
+  font-family: inherit;
+  font-size: inherit;
+  color: inherit;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 6px 10px;
+  outline: none;
+}
+input:focus,
+textarea:focus {
+  border-color: var(--accent);
+}
