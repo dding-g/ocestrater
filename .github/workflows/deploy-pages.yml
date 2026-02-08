@@ -2,9 +2,9 @@ name: Deploy Landing Page to GitHub Pages
 
 on:
   push:
-    branches: [main]
+    branches: ['*']
     paths:
-      - 'site/**'
+      - 'docs/**'
       - '.github/workflows/deploy-pages.yml'
   workflow_dispatch:
 
@@ -33,7 +33,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: site
+          path: docs
 
       - name: Deploy to GitHub Pages
         id: deployment
